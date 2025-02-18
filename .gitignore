@@ -1,0 +1,31 @@
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Entorno virtual
+.venv
+venv/
+.env
+env/
+ENV/
+
+# Archivos generados por python
+__pycache__/
+
+# Base de datos
+*.sqlite3
+
+# Migraciones de django
+**/migrations/**
+!**/migrations
+!**/migrations/__init__.py
+
+# Fixtures
+**/personal/fixtures/**
