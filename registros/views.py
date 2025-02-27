@@ -4,6 +4,8 @@ from backend.permissions import IsAdminUserOrReadOnly
 # Para hacer transacciones atómicas. Asegura que todas las operaciones se completen
 from django.db import transaction
 
+from concurrent.futures import ThreadPoolExecutor
+
 from rest_framework import generics, views
 from rest_framework.parsers import FileUploadParser
 from rest_framework.response import Response
@@ -68,49 +70,44 @@ class IngresoUpload(views.APIView):
 
     def post(self, request, filename, format=None):
         ESTRUCTURA = [(r'^curp$', 'CURP'), (r'^no_control$', 'NO_CONTROL'),
-                      (r'^paterno$', 'PATERNO'), (r'^materno$', 'MATERNO'),
-                      (r'^nombre$', 'NOMBRE'), (r'^carrera$', 'CARRERA'),
-                      (r'^[12][0-9]{3}[13]$', 'NUMERO DE PERIODO')]
-        # Obtiene el archivo enviado en la solicitud HTTP
+                    (r'^paterno$', 'PATERNO'), (r'^materno$', 'MATERNO'),
+                    (r'^nombre$', 'NOMBRE'), (r'^carrera$', 'CARRERA'),
+                    (r'^[12][0-9]{3}[13]$', 'NUMERO DE PERIODO')]
         file_obj = request.data['file']
-
-        # Carga el archivo Excel en un objeto Workbook de openpyxl,
-        # con data_only=True para obtener los valores calculados en lugar de las fórmulas
         wb = openpyxl.load_workbook(file_obj, data_only=True)
-
-        # Selecciona la hoja activa del archivo Excel
         ws = wb.active
 
         results = {"errors": [], "created": 0}
-        header_row = ws['A1':'G1'][0]  # ws['A1':'G1'] regresa una tupla de renglones, pero solo necesitamos la primera
+        header_row = ws['A1':'G1'][0]
 
-        # VALIDAR ESTRUCTURA DEL ARCHIVO COMO:
-        # curp | no_control | paterno | materno | nombre | carrera | periodo
         for i, expresion in enumerate(ESTRUCTURA):
             match = re.match(expresion[0], str(header_row[i].value).lower())
             if match is None:
                 return Response(status=400, data={'message': f'Se esperaba el campo {expresion[1]} pero se obtuvo {header_row[i].value}'})
 
-        # Crear listas para almacenar objetos antes de hacer bulk create
         personal_to_create = []
         alumnos_to_create = []
         ingresos_to_create = []
 
-        # Cachear carreras y planes
         carreras = {c.clave: c for c in Carrera.objects.all()}
         planes = {p.carrera.clave: p for p in Plan.objects.all()}
 
+        existing_ingresos = set(
+            Ingreso.objects.values_list('alumno_id', 'periodo', 'tipo')
+        )
+        existing_alumnos = {
+            a.no_control: a for a in Alumno.objects.select_related('plan__carrera').all()
+        }
+
         for row in ws.iter_rows(min_row=2):
             try:
-                # se debe verificar que todos los campos tengan datos
                 data = self.to_dict(row)
                 if data is None:
                     continue
-                # VALIDAR DATOS
+
                 Personal.validate_curp(data['curp'])
                 Alumno.validate_nocontrol(data['no_control'])
 
-                # Verificar si la carrera existe
                 if data['carrera'] not in carreras:
                     results['errors'].append({
                         'type': 'CarreraDoesNotExist',
@@ -119,36 +116,68 @@ class IngresoUpload(views.APIView):
                     })
                     continue
 
-                # Agregar Personal a la lista
-                personal_to_create.append(
-                    Personal(
-                        curp=data['curp'],
-                        paterno=data['paterno'],
-                        materno=data['materno'],
-                        nombre=data['nombre'],
-                        fecha_nacimiento=obtenerFechaNac(data['curp']),
-                        genero=obtenerGenero(data['curp'])
+                alumno = existing_alumnos.get(data['no_control'])
+                if alumno:
+                    if alumno.plan.carrera.clave != data['carrera']:
+                        results['errors'].append({
+                            'type': 'Carrera',
+                            'message': f"La carrera {data['carrera']} no concuerda con el plan registrado {alumno.plan.clave}",
+                            'row_index': row[0].row
+                        })
+                        continue
+                else:
+                    personal_to_create.append(
+                        Personal(
+                            curp=data['curp'],
+                            paterno=data['paterno'],
+                            materno=data['materno'],
+                            nombre=data['nombre'],
+                            fecha_nacimiento=obtenerFechaNac(data['curp']),
+                            genero=obtenerGenero(data['curp'])
+                        )
                     )
-                )
-
-                # Agregar Alumno a la lista
-                plan = planes.get(data['carrera'])
-                alumnos_to_create.append(
-                    Alumno(
-                        no_control=data['no_control'],
-                        curp_id=data['curp'],  # Usar el ID directamente
-                        plan=plan
+                    
+                    plan = planes.get(data['carrera'])
+                    alumnos_to_create.append(
+                        Alumno(
+                            no_control=data['no_control'],
+                            curp_id=data['curp'],
+                            plan=plan
+                        )
                     )
-                )
 
-                # Agregar Ingreso a la lista
-                ingresos_to_create.append(
-                    Ingreso(
-                        alumno_id=data['no_control'],  # Usar el ID directamente
+                ingreso_key = (data['no_control'], str(header_row[6].value), data['tipo'])
+                if ingreso_key not in existing_ingresos:
+                    # Crear instancia temporal de Ingreso para validación
+                    ingreso_temp = Ingreso(
+                        alumno_id=data['no_control'],
                         periodo=str(header_row[6].value),
                         tipo=data['tipo']
                     )
-                )
+                    
+                    try:
+                        # Calcular número de semestre
+                        ingreso_temp.calcular_num_semestre()
+                        # Validar el modelo
+                        ingreso_temp.full_clean()
+                        # Si pasa la validación, agregar a la lista para bulk create
+                        ingresos_to_create.append(ingreso_temp)
+                        results['created'] += 1
+                    except Exception as ex:
+                        if hasattr(ex, 'message_dict'):
+                            for err in ex.message_dict:
+                                results['errors'].append({
+                                    'type': err,
+                                    'message': ex.message_dict[err],
+                                    'row_index': row[0].row
+                                })
+                        else:
+                            results['errors'].append({
+                                'type': str(type(ex)),
+                                'message': str(ex),
+                                'row_index': row[0].row
+                            })
+                        continue
 
             except Exception as ex:
                 results['errors'].append({
@@ -158,7 +187,6 @@ class IngresoUpload(views.APIView):
                 })
 
         try:
-            # Realizar todas las operaciones de bulk create fuera del bucle
             with transaction.atomic():
                 # Crear registros en lotes
                 Personal.objects.bulk_create(
@@ -173,13 +201,12 @@ class IngresoUpload(views.APIView):
                     batch_size=1000
                 )
 
-                created_ingresos = Ingreso.objects.bulk_create(
-                    ingresos_to_create,
-                    ignore_conflicts=True,
-                    batch_size=1000
-                )
-
-                results['created'] = len(created_ingresos)
+                if ingresos_to_create:
+                    Ingreso.objects.bulk_create(
+                        ingresos_to_create,
+                        ignore_conflicts=True,
+                        batch_size=1000
+                    )
 
         except Exception as ex:
             results['errors'].append({
@@ -248,7 +275,7 @@ class EgresoUpload(views.APIView):
                 if data is None:
                     continue
                 # Buscar el alumno con el número de control proporcionado en los datos
-                alumno = Alumno.objects.get(pk=data['no_control'])
+                alumno = Alumno.objects.get(pk=(data['no_control']))
                 # Se crea un registro de egreso con el alumno y el periodo proporcionados
                 egresado = Egreso.objects.create(periodo=str(header_row[1].value), alumno=alumno)
                 egresado.save()
