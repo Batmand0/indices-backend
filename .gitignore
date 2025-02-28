@@ -9,6 +9,9 @@
 *.sln
 *.sw?
 
+#Excel example
+excelexam/
+
 # Entorno virtual
 .venv
 venv/
