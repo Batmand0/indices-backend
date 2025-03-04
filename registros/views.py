@@ -9,6 +9,9 @@ from rest_framework.parsers import FileUploadParser
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
 
+# Procesar en chunks más pequeños pero con procesamiento paralelo
+from concurrent.futures import ThreadPoolExecutor
+
 from .serializers import IngresoSerializer, EgresoSerializer, TitulacionSerializer, LiberacionInglesSerializer
 from .models import Ingreso, Egreso, Titulacion, LiberacionIngles
 from .periodos import getPeriodoActual
@@ -74,7 +77,7 @@ class IngresoUpload(views.APIView):
         results = {"errors": [], "created": 0}
 
         try:
-            # Leer Excel con configuración optimizada
+            # Tu código existente de lectura y validación
             df = pd.read_excel(
                 file_obj,
                 dtype={
@@ -88,111 +91,55 @@ class IngresoUpload(views.APIView):
                 header=0,
                 engine='openpyxl'
             )
-
-            # Validar y limpiar datos
             df = self.validate_data(df)
-            
-            # Cachear datos existentes para reducir consultas
-            existing_ingresos = set(
-                Ingreso.objects.values_list('alumno_id', 'periodo', 'tipo')
+
+            # Cachear datos existentes (tu código actual)
+            existing_data = (
+                set(Ingreso.objects.values_list('alumno_id', 'periodo', 'tipo')),
+                {a.no_control: a for a in Alumno.objects.select_related('plan__carrera').all()},
+                {c.clave: c for c in Carrera.objects.all()},
+                {p.carrera.clave: p for p in Plan.objects.all()}
             )
-            existing_alumnos = {
-                a.no_control: a 
-                for a in Alumno.objects.select_related('plan__carrera').all()
-            }
-            carreras = {c.clave: c for c in Carrera.objects.all()}
-            planes = {p.carrera.clave: p for p in Plan.objects.all()}
 
-            # Listas para bulk create
-            personal_to_create = []
-            alumnos_to_create = []
-            ingresos_to_create = []
+            # Dividir DataFrame en chunks
+            chunks = np.array_split(df, max(1, len(df) // self.CHUNK_SIZE))
+            
+            # Procesar chunks en paralelo
+            all_personal = []
+            all_alumnos = []
+            all_ingresos = []
 
-            # Procesar registros
-            for index, row in df.iterrows():
-                try:
-                    # Validaciones básicas
-                    Personal.validate_curp(row['curp'])
-                    Alumno.validate_nocontrol(row['no_control'])
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [
+                    executor.submit(self.process_chunk, chunk, existing_data, results)
+                    for chunk in chunks
+                ]
 
-                    if row['carrera'] not in carreras:
-                        results['errors'].append({
-                            'type': 'CarreraDoesNotExist',
-                            'message': f'La carrera {row["carrera"]} no existe',
-                            'row_index': index + 2
-                        })
-                        continue
+                for future in futures:
+                    personal_chunk, alumnos_chunk, ingresos_chunk = future.result()
+                    all_personal.extend(personal_chunk)
+                    all_alumnos.extend(alumnos_chunk)
+                    all_ingresos.extend(ingresos_chunk)
+                    results['created'] += len(ingresos_chunk)
 
-                    # Verificar alumno existente
-                    alumno = existing_alumnos.get(row['no_control'])
-                    if alumno:
-                        if alumno.plan.carrera.clave != row['carrera']:
-                            results['errors'].append({
-                                'type': 'Carrera',
-                                'message': "Carrera no coincide",
-                                'row_index': index + 2
-                            })
-                            continue
-                    else:
-                        # Crear nuevo personal y alumno
-                        personal_to_create.append(
-                            Personal(
-                                curp=row['curp'],
-                                paterno=row['paterno'],
-                                materno=row['materno'],
-                                nombre=row['nombre'],
-                                fecha_nacimiento=obtenerFechaNac(row['curp']),
-                                genero=obtenerGenero(row['curp'])
-                            )
-                        )
-                        
-                        plan = planes.get(row['carrera'])
-                        alumnos_to_create.append(
-                            Alumno(
-                                no_control=row['no_control'],
-                                curp_id=row['curp'],
-                                plan=plan
-                            )
-                        )
-
-                    # Crear ingreso si no existe
-                    ingreso_key = (row['no_control'], row['periodo'], row['tipo'])
-                    if ingreso_key not in existing_ingresos:
-                        ingreso = Ingreso(
-                            alumno_id=row['no_control'],
-                            periodo=row['periodo'],
-                            tipo=row['tipo']
-                        )
-                        ingreso.calcular_num_semestre()
-                        ingreso.full_clean()
-                        ingresos_to_create.append(ingreso)
-                        results['created'] += 1
-
-                except Exception as ex:
-                    results['errors'].append({
-                        'type': str(type(ex)),
-                        'message': str(ex),
-                        'row_index': index + 2
-                    })
-
-            # Crear registros en batch usando transacción
+            # Tu código existente de bulk_create
             try:
                 with transaction.atomic():
-                    if personal_to_create:
+                    if all_personal:
                         Personal.objects.bulk_create(
-                            personal_to_create,
+                            all_personal,
                             ignore_conflicts=True,
                             batch_size=100
                         )
-                    if alumnos_to_create:
+                    if all_alumnos:
                         Alumno.objects.bulk_create(
-                            alumnos_to_create,
+                            all_alumnos,
                             ignore_conflicts=True,
                             batch_size=100
                         )
-                    if ingresos_to_create:
+                    if all_ingresos:
                         Ingreso.objects.bulk_create(
-                            ingresos_to_create,
+                            all_ingresos,
                             ignore_conflicts=True,
                             batch_size=100
                         )
@@ -210,6 +157,80 @@ class IngresoUpload(views.APIView):
             })
 
         return Response(status=200, data=results)
+
+    def process_chunk(self, chunk_data, existing_data, results):
+        """Procesa un chunk de datos y retorna las listas de objetos a crear"""
+        personal_chunk = []
+        alumnos_chunk = []
+        ingresos_chunk = []
+        
+        existing_ingresos, existing_alumnos, carreras, planes = existing_data
+
+        for index, row in chunk_data.iterrows():
+            try:
+                # Las mismas validaciones que ya tienes
+                Personal.validate_curp(row['curp'])
+                Alumno.validate_nocontrol(row['no_control'])
+
+                if row['carrera'] not in carreras:
+                    results['errors'].append({
+                        'type': 'CarreraDoesNotExist',
+                        'message': f'La carrera {row["carrera"]} no existe',
+                        'row_index': index + 2
+                    })
+                    continue
+
+                # Tu lógica existente de verificación de alumno
+                alumno = existing_alumnos.get(row['no_control'])
+                if alumno:
+                    if alumno.plan.carrera.clave != row['carrera']:
+                        results['errors'].append({
+                            'type': 'Carrera',
+                            'message': "Carrera no coincide",
+                            'row_index': index + 2
+                        })
+                        continue
+                else:
+                    personal_chunk.append(
+                        Personal(
+                            curp=row['curp'],
+                            paterno=row['paterno'],
+                            materno=row['materno'],
+                            nombre=row['nombre'],
+                            fecha_nacimiento=obtenerFechaNac(row['curp']),
+                            genero=obtenerGenero(row['curp'])
+                        )
+                    )
+                    
+                    plan = planes.get(row['carrera'])
+                    alumnos_chunk.append(
+                        Alumno(
+                            no_control=row['no_control'],
+                            curp_id=row['curp'],
+                            plan=plan
+                        )
+                    )
+
+                # Tu lógica existente de creación de ingreso
+                ingreso_key = (row['no_control'], row['periodo'], row['tipo'])
+                if ingreso_key not in existing_ingresos:
+                    ingreso = Ingreso(
+                        alumno_id=row['no_control'],
+                        periodo=row['periodo'],
+                        tipo=row['tipo']
+                    )
+                    ingreso.calcular_num_semestre()
+                    ingreso.full_clean()
+                    ingresos_chunk.append(ingreso)
+
+            except Exception as ex:
+                results['errors'].append({
+                    'type': str(type(ex)),
+                    'message': str(ex),
+                    'row_index': index + 2
+                })
+
+        return personal_chunk, alumnos_chunk, ingresos_chunk
 
 ### EGRESO
 class EgresoList(generics.ListCreateAPIView):
