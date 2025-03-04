@@ -129,7 +129,17 @@ class IngresoUpload(views.APIView):
                     'carrera': str
                 },
                 header=0,
-                engine='openpyxl'
+                engine='openpyxl',
+                na_filter=False,  # No convertir valores vacíos a NaN
+                usecols="A:G",  # Solo leer columnas necesarias
+                converters={      # Aplicar strip() durante la lectura
+                    'curp': lambda x: str(x).strip() if pd.notna(x) else '',
+                    'no_control': lambda x: str(x).strip() if pd.notna(x) else '',
+                    'paterno': lambda x: str(x).strip() if pd.notna(x) else '',
+                    'materno': lambda x: str(x).strip() if pd.notna(x) else '',
+                    'nombre': lambda x: str(x).strip() if pd.notna(x) else '',
+                    'carrera': lambda x: str(x).strip() if pd.notna(x) else ''
+                }
             )
             df = self.validate_data(df)
 
