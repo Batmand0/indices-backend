@@ -91,7 +91,17 @@ class Ingreso(BaseRegistro):
     class Meta(BaseRegistro.Meta):
         constraints = BaseRegistro.Meta.constraints.copy()
         constraints += [
-            models.UniqueConstraint(fields=['alumno', 'num_semestre'], name='unique_num_semestre', violation_error_message='Ya se tiene un ingreso con este número de semestre')
+            models.UniqueConstraint(
+                fields=['alumno', 'num_semestre'], 
+                name='unique_num_semestre', 
+                violation_error_message='Ya se tiene un ingreso con este número de semestre'
+            )
+        ]
+        # Añadir índices manteniendo las restricciones existentes
+        indexes = [
+            models.Index(fields=['alumno', 'periodo'], name='idx_ingreso_alumno_periodo'),
+            models.Index(fields=['periodo', 'tipo'], name='idx_ingreso_periodo_tipo'),
+            models.Index(fields=['tipo'], name='idx_ingreso_tipo')
         ]
 
 
