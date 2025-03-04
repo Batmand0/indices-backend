@@ -7,7 +7,7 @@ from django.db import transaction
 from rest_framework import generics, views
 from rest_framework.parsers import FileUploadParser
 from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes 
 
 # Procesar en chunks más pequeños pero con procesamiento paralelo
 from concurrent.futures import ThreadPoolExecutor
@@ -72,6 +72,46 @@ class IngresoUpload(views.APIView):
         
         return df
 
+    def get_cached_data(self):
+        """Obtiene y cachea los datos necesarios de manera más eficiente"""
+        with transaction.atomic():
+            # Obtener ingresos existentes usando iterator() para mejor memoria
+            existing_ingresos = set(
+                Ingreso.objects.values_list(
+                    'alumno_id', 'periodo', 'tipo'
+                ).iterator()
+            )
+
+            # Obtener alumnos con datos relacionados en una sola consulta
+            existing_alumnos = {
+                a.no_control: a 
+                for a in Alumno.objects.select_related(
+                    'plan',
+                    'plan__carrera'
+                ).only(
+                    'no_control',
+                    'plan__carrera__clave',
+                    'curp_id'
+                ).all()
+            }
+
+            # Obtener solo los datos necesarios de carreras
+            carreras = {
+                c.clave: c 
+                for c in Carrera.objects.only('clave').all()
+            }
+
+            # Obtener planes con su carrera relacionada
+            planes = {
+                p.carrera.clave: p 
+                for p in Plan.objects.select_related('carrera').only(
+                    'clave',
+                    'carrera'
+                ).all()
+            }
+
+            return existing_ingresos, existing_alumnos, carreras, planes
+
     def post(self, request, filename, format=None):
         file_obj = request.data['file']
         results = {"errors": [], "created": 0}
@@ -93,13 +133,8 @@ class IngresoUpload(views.APIView):
             )
             df = self.validate_data(df)
 
-            # Cachear datos existentes (tu código actual)
-            existing_data = (
-                set(Ingreso.objects.values_list('alumno_id', 'periodo', 'tipo')),
-                {a.no_control: a for a in Alumno.objects.select_related('plan__carrera').all()},
-                {c.clave: c for c in Carrera.objects.all()},
-                {p.carrera.clave: p for p in Plan.objects.all()}
-            )
+            # Usar el nuevo método de cacheo
+            existing_data = self.get_cached_data()
 
             # Dividir DataFrame en chunks
             chunks = np.array_split(df, max(1, len(df) // self.CHUNK_SIZE))
