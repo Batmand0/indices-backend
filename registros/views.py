@@ -28,6 +28,7 @@ import numpy as np
 import multiprocessing
 import logging
 import time
+import gc
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,27 @@ class IngresoUpload(views.APIView):
         else:
             return 500
 
+    def bulk_create_with_progress(self, model, objects, batch_size=100):
+        """Crear objetos en lotes con mejor manejo de memoria"""
+        if not objects:
+            return 0
+        
+        total = len(objects)
+        created = 0
+        
+        for i in range(0, total, batch_size):
+            batch = objects[i:i + batch_size]
+            created += len(
+                model.objects.bulk_create(
+                    batch,
+                    ignore_conflicts=True
+                )
+            )
+            del batch  # Liberar memoria
+            gc.collect()  # Forzar recolección de basura
+        
+        return created
+
     def post(self, request, filename, format=None):
         start_time = time.time()
         file_obj = request.data['file']
@@ -187,29 +209,13 @@ class IngresoUpload(views.APIView):
                     all_personal.extend(personal_chunk)
                     all_alumnos.extend(alumnos_chunk)
                     all_ingresos.extend(ingresos_chunk)
-                    results['created'] += len(ingresos_chunk)
 
             # Tu código existente de bulk_create
             try:
                 with transaction.atomic():
-                    if all_personal:
-                        Personal.objects.bulk_create(
-                            all_personal,
-                            ignore_conflicts=True,
-                            batch_size=100
-                        )
-                    if all_alumnos:
-                        Alumno.objects.bulk_create(
-                            all_alumnos,
-                            ignore_conflicts=True,
-                            batch_size=100
-                        )
-                    if all_ingresos:
-                        Ingreso.objects.bulk_create(
-                            all_ingresos,
-                            ignore_conflicts=True,
-                            batch_size=100
-                        )
+                    results['created'] += self.bulk_create_with_progress(Personal, all_personal)
+                    results['created'] += self.bulk_create_with_progress(Alumno, all_alumnos)
+                    results['created'] += self.bulk_create_with_progress(Ingreso, all_ingresos)
 
             except Exception as ex:
                 results['errors'].append({
@@ -225,6 +231,10 @@ class IngresoUpload(views.APIView):
                 f"Registros: {len(df)} "
                 f"Creados: {results['created']}"
             )
+
+            # Limpiar memoria final
+            del df
+            gc.collect()
 
         except Exception as ex:
             results['errors'].append({
@@ -242,69 +252,78 @@ class IngresoUpload(views.APIView):
 
         existing_ingresos, existing_alumnos, carreras, planes = existing_data
 
-        for index, row in chunk_data.iterrows():
-            try:
-                # Las mismas validaciones que ya tienes
-                Personal.validate_curp(row['curp'])
-                Alumno.validate_nocontrol(row['no_control'])
+        try:
+            for index, row in chunk_data.iterrows():
+                try:
+                    # Las mismas validaciones que ya tienes
+                    Personal.validate_curp(row['curp'])
+                    Alumno.validate_nocontrol(row['no_control'])
 
-                if row['carrera'] not in carreras:
-                    results['errors'].append({
-                        'type': 'CarreraDoesNotExist',
-                        'message': f'La carrera {row["carrera"]} no existe',
-                        'row_index': index + 2
-                    })
-                    continue
-
-                # Tu lógica existente de verificación de alumno
-                alumno = existing_alumnos.get(row['no_control'])
-                if alumno:
-                    if alumno.plan.carrera.clave != row['carrera']:
+                    if row['carrera'] not in carreras:
                         results['errors'].append({
-                            'type': 'Carrera',
-                            'message': "Carrera no coincide",
+                            'type': 'CarreraDoesNotExist',
+                            'message': f'La carrera {row["carrera"]} no existe',
                             'row_index': index + 2
                         })
                         continue
-                else:
-                    personal_chunk.append(
-                        Personal(
-                            curp=row['curp'],
-                            paterno=row['paterno'],
-                            materno=row['materno'],
-                            nombre=row['nombre'],
-                            fecha_nacimiento=obtenerFechaNac(row['curp']),
-                            genero=obtenerGenero(row['curp'])
+
+                    # Tu lógica existente de verificación de alumno
+                    alumno = existing_alumnos.get(row['no_control'])
+                    if alumno:
+                        if alumno.plan.carrera.clave != row['carrera']:
+                            results['errors'].append({
+                                'type': 'Carrera',
+                                'message': "Carrera no coincide",
+                                'row_index': index + 2
+                            })
+                            continue
+                    else:
+                        personal_chunk.append(
+                            Personal(
+                                curp=row['curp'],
+                                paterno=row['paterno'],
+                                materno=row['materno'],
+                                nombre=row['nombre'],
+                                fecha_nacimiento=obtenerFechaNac(row['curp']),
+                                genero=obtenerGenero(row['curp'])
+                            )
                         )
-                    )
 
-                    plan = planes.get(row['carrera'])
-                    alumnos_chunk.append(
-                        Alumno(
-                            no_control=row['no_control'],
-                            curp_id=row['curp'],
-                            plan=plan
+                        plan = planes.get(row['carrera'])
+                        alumnos_chunk.append(
+                            Alumno(
+                                no_control=row['no_control'],
+                                curp_id=row['curp'],
+                                plan=plan
+                            )
                         )
-                    )
 
-                # Tu lógica existente de creación de ingreso
-                ingreso_key = (row['no_control'], row['periodo'], row['tipo'])
-                if ingreso_key not in existing_ingresos:
-                    ingreso = Ingreso(
-                        alumno_id=row['no_control'],
-                        periodo=row['periodo'],
-                        tipo=row['tipo']
-                    )
-                    ingreso.calcular_num_semestre()
-                    ingreso.full_clean()
-                    ingresos_chunk.append(ingreso)
+                    # Tu lógica existente de creación de ingreso
+                    ingreso_key = (row['no_control'], row['periodo'], row['tipo'])
+                    if ingreso_key not in existing_ingresos:
+                        ingreso = Ingreso(
+                            alumno_id=row['no_control'],
+                            periodo=row['periodo'],
+                            tipo=row['tipo']
+                        )
+                        ingreso.calcular_num_semestre()
+                        ingreso.full_clean()
+                        ingresos_chunk.append(ingreso)
 
-            except Exception as ex:
-                results['errors'].append({
-                    'type': str(type(ex)),
-                    'message': str(ex),
-                    'row_index': index + 2
-                })
+                except Exception as ex:
+                    results['errors'].append({
+                        'type': str(type(ex)),
+                        'message': str(ex),
+                        'row_index': index + 2
+                    })
+
+            # Liberar memoria del chunk procesado
+            del chunk_data
+            gc.collect()
+
+        except Exception as ex:
+            logger.error(f"Error en procesamiento de chunk: {str(ex)}")
+            raise
 
         return personal_chunk, alumnos_chunk, ingresos_chunk
 
