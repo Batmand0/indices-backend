@@ -29,6 +29,7 @@ import multiprocessing
 import logging
 import time
 import gc
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,45 @@ class IngresoUpload(views.APIView):
         
         return created
 
+    def get_optimal_chunk_configuration(self, df):
+        """Configuración optimizada de chunks basada en recursos del sistema"""
+        try:
+            # Calcular memoria disponible y tamaño de registros
+            memory = psutil.virtual_memory()
+            available_memory = memory.available
+            record_size = df.memory_usage(deep=True).sum() / len(df)
+            total_records = len(df)
+
+            # Calcular tamaño óptimo de chunk basado en memoria disponible
+            # Usar solo 30% de la memoria disponible para ser conservadores
+            memory_based_size = int((available_memory * 0.3) / record_size)
+
+            # Aplicar límites basados en número de registros
+            if total_records < 500:
+                base_size = 100
+            elif total_records < 2000:
+                base_size = 300
+            else:
+                base_size = 500
+
+            # Tomar el mínimo entre el tamaño basado en memoria y el basado en registros
+            optimal_size = min(memory_based_size, base_size)
+
+            logger.info(
+                f"Configuración de chunks: "
+                f"Registros totales: {total_records}, "
+                f"Memoria disponible: {available_memory / (1024*1024):.2f}MB, "
+                f"Tamaño por registro: {record_size / 1024:.2f}KB, "
+                f"Tamaño chunk: {optimal_size}"
+            )
+
+            return optimal_size
+
+        except Exception as ex:
+            logger.warning(f"Error al calcular tamaño de chunk: {str(ex)}")
+            # Fallback a configuración estática si hay error
+            return self.get_optimal_chunk_size(len(df))
+
     def post(self, request, filename, format=None):
         start_time = time.time()
         file_obj = request.data['file']
@@ -183,14 +223,13 @@ class IngresoUpload(views.APIView):
             df = self.validate_data(df)
             existing_data = self.get_cached_data()
 
-            # Configuración dinámica de chunks y workers
-            total_records = len(df)
-            chunk_size = self.get_optimal_chunk_size(total_records)
-            num_workers = self.get_optimal_workers(total_records)
+            # Usar la nueva configuración optimizada
+            chunk_size = self.get_optimal_chunk_configuration(df)
+            num_workers = self.get_optimal_workers(len(df))
             
             chunks = [
-                df.iloc[i:i + self.CHUNK_SIZE] 
-                for i in range(0, total_records, self.CHUNK_SIZE)
+                df.iloc[i:i + chunk_size] 
+                for i in range(0, len(df), chunk_size)
             ]
             
             all_personal = []
