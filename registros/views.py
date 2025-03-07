@@ -25,6 +25,11 @@ import openpyxl
 import re
 import pandas as pd
 import numpy as np
+import multiprocessing
+import logging
+import time
+
+logger = logging.getLogger(__name__)
 
 ### INGRESO
 class IngresoList(generics.ListCreateAPIView):
@@ -59,17 +64,17 @@ class IngresoUpload(views.APIView):
 
         # Renombrar columnas
         df.columns = ['curp', 'no_control', 'paterno', 'materno', 'nombre', 'carrera', 'tipo']
-        
+
         # Añadir columna de periodo
         df['periodo'] = periodo_col
 
         # Limpiar datos
         df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
-        
+
         # Validar datos requeridos
         required_fields = ['curp', 'no_control', 'nombre', 'carrera', 'tipo']
         df = df.dropna(subset=required_fields)
-        
+
         return df
 
     def get_cached_data(self):
@@ -112,27 +117,38 @@ class IngresoUpload(views.APIView):
 
             return existing_ingresos, existing_alumnos, carreras, planes
 
+    def get_optimal_workers(self, total_records):
+        """Determinar número óptimo de workers según tamaño de datos"""
+        if total_records < 500:
+            return 2
+        elif total_records < 2000:
+            return min(4, multiprocessing.cpu_count())
+        else:
+            return min(8, multiprocessing.cpu_count())
+
+    def get_optimal_chunk_size(self, total_records):
+        """Determinar tamaño óptimo de chunk según registros totales"""
+        if total_records < 500:
+            return 100
+        elif total_records < 2000:
+            return 300
+        else:
+            return 500
+
     def post(self, request, filename, format=None):
+        start_time = time.time()
         file_obj = request.data['file']
         results = {"errors": [], "created": 0}
 
         try:
-            # Tu código existente de lectura y validación
+            # Tu código existente de lectura
             df = pd.read_excel(
                 file_obj,
-                dtype={
-                    'curp': str,
-                    'no_control': str,
-                    'paterno': str,
-                    'materno': str,
-                    'nombre': str,
-                    'carrera': str
-                },
                 header=0,
                 engine='openpyxl',
-                na_filter=False,  # No convertir valores vacíos a NaN
-                usecols="A:G",  # Solo leer columnas necesarias
-                converters={      # Aplicar strip() durante la lectura
+                na_filter=False,
+                usecols="A:G",
+                converters={
                     'curp': lambda x: str(x).strip() if pd.notna(x) else '',
                     'no_control': lambda x: str(x).strip() if pd.notna(x) else '',
                     'paterno': lambda x: str(x).strip() if pd.notna(x) else '',
@@ -141,20 +157,26 @@ class IngresoUpload(views.APIView):
                     'carrera': lambda x: str(x).strip() if pd.notna(x) else ''
                 }
             )
-            df = self.validate_data(df)
 
-            # Usar el nuevo método de cacheo
+            df = self.validate_data(df)
             existing_data = self.get_cached_data()
 
-            # Dividir DataFrame en chunks
-            chunks = np.array_split(df, max(1, len(df) // self.CHUNK_SIZE))
+            # Configuración dinámica de chunks y workers
+            total_records = len(df)
+            chunk_size = self.get_optimal_chunk_size(total_records)
+            num_workers = self.get_optimal_workers(total_records)
             
-            # Procesar chunks en paralelo
+            chunks = [
+                df.iloc[i:i + self.CHUNK_SIZE] 
+                for i in range(0, total_records, self.CHUNK_SIZE)
+            ]
+            
             all_personal = []
             all_alumnos = []
             all_ingresos = []
 
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            # Procesamiento paralelo optimizado
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 futures = [
                     executor.submit(self.process_chunk, chunk, existing_data, results)
                     for chunk in chunks
@@ -195,6 +217,15 @@ class IngresoUpload(views.APIView):
                     'message': 'Error en bulk create: ' + str(ex)
                 })
 
+            # Logging del rendimiento
+            processing_time = time.time() - start_time
+            logger.info(
+                f"Archivo procesado: {filename} "
+                f"Tiempo: {processing_time:.2f}s "
+                f"Registros: {len(df)} "
+                f"Creados: {results['created']}"
+            )
+
         except Exception as ex:
             results['errors'].append({
                 'type': str(type(ex)),
@@ -208,7 +239,7 @@ class IngresoUpload(views.APIView):
         personal_chunk = []
         alumnos_chunk = []
         ingresos_chunk = []
-        
+
         existing_ingresos, existing_alumnos, carreras, planes = existing_data
 
         for index, row in chunk_data.iterrows():
@@ -246,7 +277,7 @@ class IngresoUpload(views.APIView):
                             genero=obtenerGenero(row['curp'])
                         )
                     )
-                    
+
                     plan = planes.get(row['carrera'])
                     alumnos_chunk.append(
                         Alumno(
