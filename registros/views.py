@@ -138,23 +138,50 @@ class IngresoUpload(views.APIView):
             return 500
 
     def bulk_create_with_progress(self, model, objects, batch_size=100):
-        """Crear objetos en lotes con mejor manejo de memoria"""
+        """Creación en lotes optimizada con mejor manejo de memoria y errores"""
         if not objects:
             return 0
         
         total = len(objects)
         created = 0
+        max_retries = 3
         
-        for i in range(0, total, batch_size):
-            batch = objects[i:i + batch_size]
-            created += len(
-                model.objects.bulk_create(
-                    batch,
-                    ignore_conflicts=True
-                )
-            )
-            del batch  # Liberar memoria
-            gc.collect()  # Forzar recolección de basura
+        def create_batch_with_retry(batch):
+            """Función auxiliar para crear un batch con reintentos"""
+            for attempt in range(max_retries):
+                try:
+                    with transaction.atomic():
+                        return len(model.objects.bulk_create(
+                            batch,
+                            ignore_conflicts=True,
+                            batch_size=len(batch)
+                        ))
+                except Exception as ex:
+                    if attempt == max_retries - 1:
+                        logger.error(f"Error en batch después de {max_retries} intentos: {str(ex)}")
+                        raise
+                    time.sleep(0.1)
+            return 0
+
+        # Dividir en batches usando list comprehension
+        batches = [
+            objects[i:i + batch_size] 
+            for i in range(0, total, batch_size)
+        ]
+        
+        # Procesar cada batch
+        for batch in batches:
+            try:
+                created += create_batch_with_retry(batch)
+                del batch
+                
+                # Limpiar memoria periódicamente
+                if created % (batch_size * 10) == 0:
+                    gc.collect()
+                    
+            except Exception as ex:
+                logger.error(f"Error en bulk create: {str(ex)}")
+                raise
         
         return created
 
