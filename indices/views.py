@@ -10,6 +10,7 @@ from registros.periodos import calcularPeriodos
 from personal.models import Personal
 
 from decimal import Decimal
+import logging
 
 # Función para calcular la tasa de permanencia
 def calcularTasa(poblacion, poblacion_nuevo_ingreso):
@@ -341,6 +342,124 @@ class IndicesDesercion(APIView):
             response_data[periodo] = dict(hombres=poblacion_act['hombres'], mujeres=poblacion_act['mujeres'], hombres_egresados=poblacion_inactiva['egreso']['hombres'], mujeres_egresadas=poblacion_inactiva['egreso']['mujeres'], hombres_desertores=desercion['hombres'], mujeres_desertoras=desercion['mujeres'], tasa_desercion=tasa_desercion)
 
         return Response(response_data)
+    
+class IndicesGeneracionalDesercion(APIView):
+    """
+    Vista para listar los índices de deserción por generación.
+
+    * Requiere autenticación por token.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_generaciones(self, cohorte, num_generaciones=9):
+        """
+        Obtiene las generaciones a analizar, una por cada semestre
+        Ejemplo: [20241, 20243, 20251, 20253, 20261, 20263, 20271, 20273, 20281]
+        """
+        cohorte_actual = int(cohorte)
+        año_base = cohorte_actual // 10
+        semestre_actual = cohorte_actual % 10
+        generaciones = []
+        
+        for i in range(num_generaciones):
+            año = año_base + (i // 2)  # Incrementa año cada 2 iteraciones
+            semestre = 1 if i % 2 == 0 else 3  # Alterna entre 1 y 3
+            generacion = str(año * 10 + semestre)
+            generaciones.append(generacion)
+        
+        return generaciones
+
+    def get_poblacion_data(self, tipos, generacion, carrera, ultimo_periodo=None):
+        """Obtiene datos de población para una generación"""
+        alumnos = Ingreso.objects.filter(
+            tipo__in=tipos,
+            periodo=generacion,
+            alumno__plan__carrera__pk=carrera
+        ).select_related(
+            'alumno',
+            'alumno__plan',
+            'alumno__curp'
+        ).annotate(
+            clave=F("alumno_id")
+        ).values("clave")
+
+        # Población inicial
+        poblacion_inicial = obtenerPoblacionActiva(tipos, alumnos, generacion, carrera)
+        total_inicial = poblacion_inicial['poblacion']
+
+        # Población actual
+        if ultimo_periodo:
+            poblacion_actual = obtenerPoblacionActiva(['RE'], alumnos, ultimo_periodo, carrera)
+            total_actual = poblacion_actual['poblacion']
+        else:
+            total_actual = total_inicial
+
+        return total_inicial, total_actual
+
+    def get(self, request, format=None):
+        try:
+            # Validación de parámetros
+            cohorte = request.GET.get('cohorte', '20241')
+            num_semestres = int(request.GET.get('semestres', '9'))
+            carrera = request.GET.get('carrera')
+            
+            if not carrera:
+                return Response(
+                    {'error': 'Carrera es requerida'}, 
+                    status=400
+                )
+
+            # Calcular tipos de ingreso
+            tipos = calcularTipos(
+                request.GET.get('nuevo-ingreso'),
+                request.GET.get('traslado-equivalencia')
+            )
+
+            # Procesar generaciones
+            response_data = {}
+            generaciones = self.get_generaciones(cohorte, num_semestres)
+
+            for gen in generaciones:
+                # Calcular periodos asegurando 9 semestres completos
+                periodos = calcularPeriodos(gen, 9)  # Forzar a 9 semestres
+                print(f"Generación {gen} tiene periodos: {periodos}")   
+                # Asegurarse de que se incluya el noveno semestre
+                if len(periodos) < 9:
+                    # Si no hay suficientes periodos, ajustar el último
+                    año = int(gen) // 10 + 4  # 4 años completos para 9 semestres
+                    semestre = 2 if int(gen) % 10 == 1 else 1
+                    ultimo_periodo = str(año * 10 + semestre)
+                else:
+                    ultimo_periodo = periodos[8]  # Índice 8 para el 9no semestre
+
+                total_inicial, total_actual = self.get_poblacion_data(
+                    tipos, 
+                    gen, 
+                    carrera, 
+                    ultimo_periodo
+                )
+
+                # Cálculos de deserción
+                desertores = total_inicial - total_actual
+                tasa_desercion = calcularTasa(desertores, total_inicial)
+
+                response_data[gen] = {
+                    'total_inicial': total_inicial,
+                    'total_actual': total_actual,
+                    'desertores': desertores,
+                    'tasa_desercion': tasa_desercion,
+                    'ultimo_periodo': ultimo_periodo,  # Para verificación
+                    'total_semestres': len(periodos)  # Para verificación
+                }
+
+            return Response(response_data)
+
+        except Exception as ex:
+            logger.error(f"Error en índices generacionales: {str(ex)}")
+            return Response(
+                {'error': str(ex)}, 
+                status=500
+            )
 
 # Función para calcular los desertores
 def calcularDesercion(lista_alumnos_periodo_anterior, lista_alumnos_periodo_actual, lista_alumnos_egresados):
