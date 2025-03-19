@@ -369,16 +369,12 @@ class IndicesGeneracionalDesercion(APIView):
         
         return generaciones
 
-    def get_poblacion_data(self, tipos, generacion, carrera, ultimo_periodo=None):
-        """Obtiene datos de población para una generación"""
+    def get_poblacion_data(self, tipos, generacion, carrera, periodos):
+        """Obtiene datos de población para una generación usando lógica acumulativa"""
         alumnos = Ingreso.objects.filter(
             tipo__in=tipos,
             periodo=generacion,
             alumno__plan__carrera__pk=carrera
-        ).select_related(
-            'alumno',
-            'alumno__plan',
-            'alumno__curp'
         ).annotate(
             clave=F("alumno_id")
         ).values("clave")
@@ -387,14 +383,50 @@ class IndicesGeneracionalDesercion(APIView):
         poblacion_inicial = obtenerPoblacionActiva(tipos, alumnos, generacion, carrera)
         total_inicial = poblacion_inicial['poblacion']
 
-        # Población actual
-        if ultimo_periodo:
-            poblacion_actual = obtenerPoblacionActiva(['RE'], alumnos, ultimo_periodo, carrera)
-            total_actual = poblacion_actual['poblacion']
-        else:
-            total_actual = total_inicial
+        # Calcular deserción acumulada
+        desercion_total = 0
+        alumnos_periodo_anterior = alumnos
+        periodo_anterior = generacion
 
-        return total_inicial, total_actual
+        for periodo in periodos:
+            if periodo == generacion:
+                alumnos_periodo = Ingreso.objects.filter(
+                    tipo__in=tipos,
+                    periodo=periodo,
+                    alumno_id__in=alumnos,
+                    alumno__plan__carrera__pk=carrera
+                ).annotate(
+                    clave=F("alumno_id")
+                ).values("clave")
+            else:
+                alumnos_periodo = Ingreso.objects.filter(
+                    tipo='RE',
+                    periodo=periodo,
+                    alumno_id__in=alumnos,
+                    alumno__plan__carrera__pk=carrera
+                ).annotate(
+                    clave=F("alumno_id")
+                ).values("clave")
+
+            egresados_periodo = Egreso.objects.filter(
+                periodo=periodo_anterior,
+                alumno_id__in=alumnos
+            ).annotate(
+                clave=F("alumno_id")
+            ).values("clave")
+
+            desercion = calcularDesercion(
+                alumnos_periodo_anterior,
+                alumnos_periodo,
+                egresados_periodo
+            )
+            
+            desercion_total += desercion['hombres'] + desercion['mujeres']
+            print(f"Periodo {periodo}: deserción={desercion['hombres'] + desercion['mujeres']}, acumulada={desercion_total}")
+            alumnos_periodo_anterior = alumnos_periodo
+            periodo_anterior = periodo
+
+        return total_inicial, desercion_total
 
     def get(self, request, format=None):
         try:
@@ -423,33 +455,24 @@ class IndicesGeneracionalDesercion(APIView):
                 # Calcular periodos asegurando 9 semestres completos
                 periodos = calcularPeriodos(gen, 9)  # Forzar a 9 semestres
                 print(f"Generación {gen} tiene periodos: {periodos}")   
-                # Asegurarse de que se incluya el noveno semestre
-                if len(periodos) < 9:
-                    # Si no hay suficientes periodos, ajustar el último
-                    año = int(gen) // 10 + 4  # 4 años completos para 9 semestres
-                    semestre = 2 if int(gen) % 10 == 1 else 1
-                    ultimo_periodo = str(año * 10 + semestre)
-                else:
-                    ultimo_periodo = periodos[8]  # Índice 8 para el 9no semestre
+                
+                ultimo_periodo = periodos[8]  # Índice 8 para el 9no semestre
 
-                total_inicial, total_actual = self.get_poblacion_data(
+                total_inicial, desercion_total = self.get_poblacion_data(
                     tipos, 
                     gen, 
                     carrera, 
-                    ultimo_periodo
+                    periodos  # Pasar todos los periodos
                 )
 
-                # Cálculos de deserción
-                desertores = total_inicial - total_actual
-                tasa_desercion = calcularTasa(desertores, total_inicial)
-
+                tasa_desercion = calcularTasa(desercion_total, total_inicial)
+                
+                # Agregar esta parte que falta
                 response_data[gen] = {
                     'total_inicial': total_inicial,
-                    'total_actual': total_actual,
-                    'desertores': desertores,
+                    'desercion_total': desercion_total,
                     'tasa_desercion': tasa_desercion,
-                    'ultimo_periodo': ultimo_periodo,  # Para verificación
-                    'total_semestres': len(periodos)  # Para verificación
+                    'ultimo_periodo': ultimo_periodo
                 }
 
             return Response(response_data)
