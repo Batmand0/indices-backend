@@ -474,6 +474,7 @@ class IndicesGeneracionalDesercion(APIView):
                     'tasa_desercion': tasa_desercion,
                     'ultimo_periodo': ultimo_periodo
                 }
+                
 
             return Response(response_data)
 
