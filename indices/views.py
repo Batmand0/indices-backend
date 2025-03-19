@@ -387,6 +387,7 @@ class IndicesGeneracionalDesercion(APIView):
         desercion_total = 0
         alumnos_periodo_anterior = alumnos
         periodo_anterior = generacion
+        ultimo_periodo = periodos[-1]  # Obtener el último periodo
 
         for periodo in periodos:
             if periodo == generacion:
@@ -426,7 +427,11 @@ class IndicesGeneracionalDesercion(APIView):
             alumnos_periodo_anterior = alumnos_periodo
             periodo_anterior = periodo
 
-        return total_inicial, desercion_total
+        # Obtener población actual del último periodo
+        poblacion_actual = obtenerPoblacionActiva(['RE'], alumnos, ultimo_periodo, carrera)
+        total_actual = poblacion_actual['poblacion']
+
+        return total_inicial, desercion_total, total_actual
 
     def get(self, request, format=None):
         try:
@@ -458,7 +463,7 @@ class IndicesGeneracionalDesercion(APIView):
                 
                 ultimo_periodo = periodos[8]  # Índice 8 para el 9no semestre
 
-                total_inicial, desercion_total = self.get_poblacion_data(
+                total_inicial, desercion_total, total_actual = self.get_poblacion_data(
                     tipos, 
                     gen, 
                     carrera, 
@@ -470,6 +475,7 @@ class IndicesGeneracionalDesercion(APIView):
                 # Agregar esta parte que falta
                 response_data[gen] = {
                     'total_inicial': total_inicial,
+                    'total_actual': total_actual,
                     'desercion_total': desercion_total,
                     'tasa_desercion': tasa_desercion,
                     'ultimo_periodo': ultimo_periodo
