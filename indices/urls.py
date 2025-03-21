@@ -8,4 +8,5 @@ urlpatterns = [
     path('desercion/', views.IndicesDesercion.as_view(), name='desercion'),
     path('desercion/generacional', views.IndicesGeneracionalDesercion.as_view(), name='desercion_generacional'),
     path('permanencia/generacional', views.IndicesGeneracionalPermanencia.as_view(), name='permanencia_generacional'),
+    path('egreso/generacional', views.IndicesGeneracionalEgreso.as_view(), name='egreso_generacional')
 ]

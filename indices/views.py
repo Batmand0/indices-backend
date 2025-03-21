@@ -245,7 +245,7 @@ class IndicesEgreso(APIView):
             # Se asignan los datos al diccionario de respuesta
             response_data[periodo] = dict(hombres=poblacion_act['hombres'], mujeres=poblacion_act['mujeres'], hombres_egresados=poblacion_inactiva['egreso']['hombres'], mujeres_egresadas=poblacion_inactiva['egreso']['mujeres'], tasa_egreso=tasa_egreso)
         return Response(response_data)
-
+    
 class IndicesTitulacion(APIView):
     """
     Vista para listar la cantidad de alumnos por carrera.
@@ -605,6 +605,131 @@ class IndicesGeneracionalPermanencia(APIView):
                     'total_inicial': total_inicial,
                     'total_actual': total_actual,
                     'tasa_permanencia': tasa_permanencia
+                }
+
+            return Response(response_data)
+
+        except Exception as ex:
+            logger.error(f"Error en índices generacionales: {str(ex)}")
+            return Response(
+                {'error': str(ex)}, 
+                status=500
+            )
+
+class IndicesGeneracionalEgreso(APIView):
+    """
+    Vista para listar los índices de egreso por generación.
+
+    * Requiere autenticación por token.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_generaciones(self, cohorte, num_generaciones=9):
+        """
+        Obtiene las generaciones a analizar, una por cada semestre
+        Ejemplo: [20241, 20243, 20251, 20253, 20261, 20263, 20271, 20273, 20281]
+        """
+        cohorte_actual = int(cohorte)
+        año_base = cohorte_actual // 10
+        semestre_actual = cohorte_actual % 10
+        generaciones = []
+        
+        for i in range(num_generaciones):
+            año = año_base + (i // 2)  # Incrementa año cada 2 iteraciones
+            semestre = 1 if i % 2 == 0 else 3  # Alterna entre 1 y 3
+            generacion = str(año * 10 + semestre)
+            generaciones.append(generacion)
+        
+        return generaciones
+
+    def get_poblacion_data(self, tipos, generacion, carrera, periodos):
+        """Obtiene datos de población para una generación usando lógica acumulativa"""
+        alumnos = Ingreso.objects.filter(
+            tipo__in=tipos,
+            periodo=generacion,
+            alumno__plan__carrera__pk=carrera
+        ).annotate(
+            clave=F("alumno_id")
+        ).values("clave")
+
+        # Población inicial
+        poblacion_inicial = obtenerPoblacionActiva(tipos, alumnos, generacion, carrera)
+        total_inicial = poblacion_inicial['poblacion']
+
+        alumnos_periodo_anterior = alumnos
+        periodo_anterior = generacion
+        ultimo_periodo = periodos[-1]  # Obtener el último periodo
+
+        for periodo in periodos:
+            if periodo == generacion:
+                alumnos_periodo = Ingreso.objects.filter(
+                    tipo__in=tipos,
+                    periodo=periodo,
+                    alumno_id__in=alumnos,
+                    alumno__plan__carrera__pk=carrera
+                ).annotate(
+                    clave=F("alumno_id")
+                ).values("clave")
+            else:
+                alumnos_periodo = Ingreso.objects.filter(
+                    tipo='RE',
+                    periodo=periodo,
+                    alumno_id__in=alumnos,
+                    alumno__plan__carrera__pk=carrera
+                ).annotate(
+                    clave=F("alumno_id")
+                ).values("clave")
+
+            alumnos_periodo_anterior = alumnos_periodo
+            periodo_anterior = periodo
+
+        # Obtener población de egresados del último periodo
+        poblacion_egresada = obtenerPoblacionEgreso(alumnos, ultimo_periodo)
+        total_egresados = poblacion_egresada['total']
+
+        return total_inicial, total_egresados
+
+    def get(self, request, format=None):
+        try:
+            # Validación de parámetros
+            cohorte = request.GET.get('cohorte', '20241')
+            num_semestres = int(request.GET.get('semestres', '9'))
+            carrera = request.GET.get('carrera')
+            
+            if not carrera:
+                return Response(
+                    {'error': 'Carrera es requerida'}, 
+                    status=400
+                )
+
+            # Calcular tipos de ingreso
+            tipos = calcularTipos(
+                request.GET.get('nuevo-ingreso'),
+                request.GET.get('traslado-equivalencia')
+            )
+
+            # Procesar generaciones
+            response_data = {}
+            generaciones = self.get_generaciones(cohorte, num_semestres)
+
+            for gen in generaciones:
+                # Calcular periodos asegurando 9 semestres completos
+                periodos = calcularPeriodos(gen, 9)  # Forzar a 9 semestres
+                print(f"Generación {gen} tiene periodos: {periodos}")   
+                
+                total_inicial, total_egresados = self.get_poblacion_data(
+                    tipos, 
+                    gen, 
+                    carrera, 
+                    periodos  # Pasar todos los periodos
+                )
+
+                tasa_egreso = calcularTasa(total_egresados, total_inicial)
+                
+                response_data[gen] = {
+                    'total_inicial': total_inicial,
+                    'total_egresados': total_egresados,
+                    'tasa_egreso': tasa_egreso
                 }
 
             return Response(response_data)
