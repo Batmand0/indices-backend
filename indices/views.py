@@ -241,6 +241,72 @@ class IndicesPermanencia(APIView):
             logger.info(f"Periodos en response_data: {response_data.keys()}")
             logger.info(f"Total de periodos procesados: {len(response_data)}")
 
+            # Construir response_data mezclando datos actuales con deserción siguiente
+            response_data = {}
+            for i in range(len(periodos) - 1):
+                periodo_actual = periodos[i]
+                periodo_siguiente = periodos[i + 1]
+                
+                if periodo_siguiente in temp_data:
+                    # Copiar datos del periodo actual
+                    response_data[periodo_actual] = temp_data[periodo_actual].copy()
+                    
+                    # Sobrescribir solo los datos de deserción con los del periodo siguiente
+                    response_data[periodo_actual]['hombres_desertores'] = temp_data[periodo_siguiente]['hombres_desertores']
+                    response_data[periodo_actual]['mujeres_desertoras'] = temp_data[periodo_siguiente]['mujeres_desertoras']
+                    
+                    # Recalcular tasa de permanencia con la deserción del siguiente periodo
+                    activos = temp_data[periodo_actual]['hombres'] + temp_data[periodo_actual]['mujeres']
+                    desertores_siguiente = (temp_data[periodo_siguiente]['hombres_desertores'] + 
+                                         temp_data[periodo_siguiente]['mujeres_desertoras'])
+                    
+                    tasa_permanencia = calcularTasa(activos - desertores_siguiente, poblacion_nuevo_ingreso)
+                    response_data[periodo_actual]['tasa_permanencia'] = tasa_permanencia
+                    
+                    logger.info(f"""
+                        Periodo {periodo_actual}:
+                        Activos: {activos}
+                        Desertores siguiente: {desertores_siguiente}
+                        Nueva tasa permanencia: {tasa_permanencia}
+                    """)
+                else:
+                    logger.warning(f"No se encontraron datos para el periodo {periodo_siguiente}")
+
+            # En el método get de IndicesPermanencia
+            for i in range(len(periodos) - 1):
+                periodo_actual = periodos[i]
+                periodo_siguiente = periodos[i + 1]
+                
+                if periodo_siguiente in temp_data:
+                    # Copiar datos del periodo actual
+                    response_data[periodo_actual] = temp_data[periodo_actual].copy()
+                    
+                    # Sobrescribir solo los datos de deserción con los del periodo siguiente
+                    response_data[periodo_actual]['hombres_desertores'] = temp_data[periodo_siguiente]['hombres_desertores']
+                    response_data[periodo_actual]['mujeres_desertoras'] = temp_data[periodo_siguiente]['mujeres_desertoras']
+                    
+                    # Recalcular tasa de permanencia considerando egresados y deserción
+                    activos = temp_data[periodo_actual]['hombres'] + temp_data[periodo_actual]['mujeres']
+                    egresados = (temp_data[periodo_actual]['hombres_egresados'] + 
+                                temp_data[periodo_actual]['mujeres_egresadas'])
+                    desertores_siguiente = (temp_data[periodo_siguiente]['hombres_desertores'] + 
+                                         temp_data[periodo_siguiente]['mujeres_desertoras'])
+                    
+                    # Nueva fórmula: (activos - egresados - desertores_siguiente) / poblacion_nuevo_ingreso
+                    activos_menos_bajas = activos - egresados - desertores_siguiente
+                    tasa_permanencia = calcularTasa(activos_menos_bajas, poblacion_nuevo_ingreso)
+                    response_data[periodo_actual]['tasa_permanencia'] = tasa_permanencia
+                    
+                    logger.info(f"""
+                        Periodo {periodo_actual}:
+                        Activos: {activos}
+                        Egresados: {egresados}
+                        Desertores siguiente: {desertores_siguiente}
+                        Activos - Egresados - Desertores: {activos_menos_bajas}
+                        Población nuevo ingreso: {poblacion_nuevo_ingreso}
+                        Nueva tasa permanencia: {tasa_permanencia}
+                    """)
+
             return Response(response_data)
         except Exception as ex:
             logger.error(f"Error en índices generacionales: {str(ex)}")
@@ -402,7 +468,6 @@ class IndicesDesercion(APIView):
                 mujeres_desertoras=desercion['mujeres'], 
                 tasa_desercion=tasa_desercion
             )
-
         # Luego, construimos response_data desplazando los resultados un periodo
         response_data = {}
         logger.info(f"Periodos disponibles: {periodos}")
@@ -517,7 +582,7 @@ class IndicesGeneracionalDesercion(APIView):
         try:
             # Validación de parámetros
             cohorte = request.GET.get('cohorte', '20241')
-            num_semestres = int(request.GET.get('semestres', '9'))
+            num_semestres = int(request.GET.get('semestres', '10'))
             carrera = request.GET.get('carrera')
             
             if not carrera:
@@ -538,10 +603,10 @@ class IndicesGeneracionalDesercion(APIView):
 
             for gen in generaciones:
                 # Calcular periodos asegurando 9 semestres completos
-                periodos = calcularPeriodos(gen, 9)  # Forzar a 9 semestres
+                periodos = calcularPeriodos(gen, 10)  # Forzar a 9 semestres
                 print(f"Generación {gen} tiene periodos: {periodos}")   
                 
-                ultimo_periodo = periodos[8]  # Índice 8 para el 9no semestre
+                ultimo_periodo = periodos[9]  # Índice 8 para el 9no semestre
 
                 total_inicial, desercion_total, total_actual = self.get_poblacion_data(
                     tipos, 
@@ -648,7 +713,7 @@ class IndicesGeneracionalPermanencia(APIView):
         try:
             # Validación de parámetros
             cohorte = request.GET.get('cohorte', '20241')
-            num_semestres = int(request.GET.get('semestres', '9'))
+            num_semestres = int(request.GET.get('semestres', '10'))
             carrera = request.GET.get('carrera')
             
             if not carrera:
@@ -669,7 +734,7 @@ class IndicesGeneracionalPermanencia(APIView):
 
             for gen in generaciones:
                 # Calcular periodos asegurando 9 semestres completos
-                periodos = calcularPeriodos(gen, 9)  # Forzar a 9 semestres
+                periodos = calcularPeriodos(gen, 10)  # Forzar a 9 semestres
                 print(f"Generación {gen} tiene periodos: {periodos}")   
                 
                 total_inicial, total_actual = self.get_poblacion_data(
