@@ -447,12 +447,13 @@ class IndicesDesercion(APIView):
                 alumnos_periodo = Ingreso.objects.filter(tipo__in=tipos, periodo=periodo, alumno_id__in=alumnos, alumno__plan__carrera__pk=carrera).annotate(clave=F("alumno_id")
                     ).values("clave")
             else:
-                poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
+                poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)  # Para otros datos inactivos
                 alumnos_periodo = Ingreso.objects.filter(tipo='RE', periodo=periodo, alumno_id__in=alumnos, alumno__plan__carrera__pk=carrera).annotate(clave=F("alumno_id")
                     ).values("clave")
             poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
 
-            egresados_periodo = Egreso.objects.filter(periodo=periodo_anterior, alumno_id__in=alumnos).annotate(clave=F("alumno_id")).values("clave")
+            egresados_periodo = Egreso.objects.filter(periodo=periodo, alumno_id__in=alumnos).annotate(clave=F("alumno_id")).values("clave")
+
             desercion = calcularDesercion(alumnos_periodo_anterior, alumnos_periodo, egresados_periodo)
             alumnos_periodo_anterior = alumnos_periodo
             desercion_total += desercion['hombres'] + desercion['mujeres']
@@ -485,6 +486,101 @@ class IndicesDesercion(APIView):
                 logger.info(f"Datos copiados para {periodo_actual}: {response_data[periodo_actual]}")
             else:
                 logger.warning(f"No se encontraron datos para el periodo {periodo_siguiente}")
+
+        # Modificar el bucle final donde construimos response_data
+        desercion_acumulada = 0
+        poblacion_activa_anterior_h = 0
+        poblacion_activa_anterior_m = 0
+
+        for i in range(len(periodos) - 1):
+            periodo_actual = periodos[i]
+            periodo_siguiente = periodos[i + 1]
+            
+            if periodo_siguiente in temp_data:
+                # Copiar datos base del periodo actual
+                response_data[periodo_actual] = temp_data[periodo_actual].copy()
+                
+                # Obtener desertores y egresados
+                desertores_h = temp_data[periodo_siguiente]['hombres_desertores']
+                desertores_m = temp_data[periodo_siguiente]['mujeres_desertoras']
+                egresados_h = temp_data[periodo_actual]['hombres_egresados']
+                egresados_m = temp_data[periodo_actual]['mujeres_egresadas']
+                
+                # Actualizar población activa
+                if periodo_actual == periodos[0]:  # Si es el primer periodo (2015-1)
+                    # Mantener población inicial sin cambios
+                    poblacion_activa_h = temp_data[periodo_actual]['hombres']
+                    poblacion_activa_m = temp_data[periodo_actual]['mujeres']
+                    poblacion_activa_anterior_h = poblacion_activa_h
+                    poblacion_activa_anterior_m = poblacion_activa_m
+                else:
+                    # Para los siguientes periodos, usar población anterior
+                    # menos los desertores y egresados del periodo anterior
+                    poblacion_activa_h = poblacion_activa_anterior_h - (temp_data[periodo_anterior]['hombres_desertores'] + temp_data[periodo_anterior]['hombres_egresados'])
+                    poblacion_activa_m = poblacion_activa_anterior_m - (temp_data[periodo_anterior]['mujeres_desertoras'] + temp_data[periodo_anterior]['mujeres_egresadas'])
+                    poblacion_activa_anterior_h = poblacion_activa_h
+                    poblacion_activa_anterior_m = poblacion_activa_m
+                
+                # Actualizar datos en response
+                response_data[periodo_actual]['hombres'] = poblacion_activa_h
+                response_data[periodo_actual]['mujeres'] = poblacion_activa_m
+                
+                # Actualizar datos de deserción y egresados
+                response_data[periodo_actual]['hombres_desertores'] = desertores_h
+                response_data[periodo_actual]['mujeres_desertoras'] = desertores_m
+                response_data[periodo_actual]['hombres_egresados'] = egresados_h
+                response_data[periodo_actual]['mujeres_egresadas'] = egresados_m
+                
+                # Actualizar deserción acumulada
+                desercion_periodo = desertores_h + desertores_m
+                desercion_acumulada += desercion_periodo
+                
+                # Calcular tasa con deserción acumulada
+                response_data[periodo_actual]['tasa_desercion'] = calcularTasa(
+                    desercion_acumulada, 
+                    poblacion_nuevo_ingreso
+                )
+                
+                periodo_anterior = periodo_actual
+                
+                logger.info(f"""
+                    Periodo {periodo_actual}:
+                    Activos H: {poblacion_activa_h}
+                    Activos M: {poblacion_activa_m}
+                    Total Activos: {poblacion_activa_h + poblacion_activa_m}
+                    Egresados H: {egresados_h}
+                    Egresados M: {egresados_m}
+                    Desertores H: {desertores_h}
+                    Desertores M: {desertores_m}
+                    Deserción acumulada: {desercion_acumulada}
+                    Tasa deserción: {response_data[periodo_actual]['tasa_desercion']}
+                """)
+
+        # Dentro del segundo bucle de IndicesDesercion
+        if periodo_siguiente in temp_data:
+            # Copiar datos base del periodo actual
+            response_data[periodo_actual] = temp_data[periodo_actual].copy()
+            
+            # Obtener desertores y egresados
+            desertores_h = temp_data[periodo_siguiente]['hombres_desertores']
+            desertores_m = temp_data[periodo_siguiente]['mujeres_desertoras']
+            egresados_h = temp_data[periodo_actual]['hombres_egresados']
+            egresados_m = temp_data[periodo_actual]['mujeres_egresadas']
+            
+            # Actualizar población activa
+            if periodo_actual == periodos[0]:  # Si es el primer periodo
+                # Mantener población inicial sin cambios
+                poblacion_activa_h = temp_data[periodo_actual]['hombres']
+                poblacion_activa_m = temp_data[periodo_actual]['mujeres']
+            else:
+                # Calcular población activa:
+                # inscritos - egresados_actual - desertores_actual
+                poblacion_activa_h = (temp_data[periodo_actual]['hombres'] - 
+                                    egresados_h - 
+                                    temp_data[periodo_actual]['hombres_desertores'])
+                poblacion_activa_m = (temp_data[periodo_actual]['mujeres'] - 
+                                    egresados_m - 
+                                    temp_data[periodo_actual]['mujeres_desertoras'])
 
         return Response(response_data)
     
