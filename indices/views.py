@@ -131,8 +131,115 @@ def obtenerPoblacionTitulada(lista_alumnos, periodo):
 
     return poblacion_titulacion
 
+from abc import ABC, abstractmethod
+
+class IndicesBase(APIView, ABC):
+    """Clase base abstracta para todos los índices"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_params(self, request):
+        """Obtiene y valida parámetros comunes"""
+        return {
+            'nuevo_ingreso': request.GET.get('nuevo-ingreso'),
+            'traslado_equivalencia': request.GET.get('traslado-equivalencia'),
+            'cohorte': request.GET.get('cohorte', '20241'),
+            'semestres': request.GET.get('semestres', '9'),
+            'carrera': request.GET.get('carrera')
+        }
+
+    def get_base_data(self, tipos, cohorte, periodos, carrera):
+        """Obtiene datos base comunes"""
+        temp_data = {}
+        poblacion_nuevo_ingreso = 0
+        
+        # Obtener alumnos iniciales
+        alumnos = Ingreso.objects.filter(
+            tipo__in=tipos,
+            periodo=cohorte,
+            alumno__plan__carrera__pk=carrera
+        ).annotate(
+            clave=F("alumno_id")
+        ).values("clave")
+
+        alumnos_periodo_anterior = alumnos
+        periodo_anterior = cohorte
+
+        # Recolección de datos por periodo
+        for periodo in periodos:
+            # Obtener población activa
+            if periodo == cohorte:
+                poblacion_act = obtenerPoblacionActiva(tipos, alumnos, periodo, carrera)
+                poblacion_nuevo_ingreso = poblacion_act['poblacion']
+                alumnos_periodo = Ingreso.objects.filter(
+                    tipo__in=tipos,
+                    periodo=periodo,
+                    alumno_id__in=alumnos,
+                    alumno__plan__carrera__pk=carrera
+                ).annotate(
+                    clave=F("alumno_id")
+                ).values("clave")
+            else:
+                poblacion_act = obtenerPoblacionActiva(['RE'], alumnos, periodo, carrera)
+                alumnos_periodo = Ingreso.objects.filter(
+                    tipo='RE',
+                    periodo=periodo,
+                    alumno_id__in=alumnos,
+                    alumno__plan__carrera__pk=carrera
+                ).annotate(
+                    clave=F("alumno_id")
+                ).values("clave")
+            
+            # Obtener datos de inactivos
+            poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
+            
+            # Calcular deserción
+            egresados_periodo = Egreso.objects.filter(
+                periodo=periodo_anterior,
+                alumno_id__in=alumnos
+            ).annotate(
+                clave=F("alumno_id")
+            ).values("clave")
+
+            desercion = calcularDesercion(
+                alumnos_periodo_anterior,
+                alumnos_periodo,
+                egresados_periodo
+            )
+            
+            # Guardar datos en temp_data
+            temp_data[periodo] = {
+                'hombres': poblacion_act['hombres'],
+                'mujeres': poblacion_act['mujeres'],
+                'hombres_egresados': poblacion_inactiva['egreso']['hombres'],
+                'mujeres_egresadas': poblacion_inactiva['egreso']['mujeres'],
+                'hombres_titulados': poblacion_inactiva['titulacion']['hombres'],
+                'mujeres_tituladas': poblacion_inactiva['titulacion']['mujeres'],
+                'hombres_desertores': desercion['hombres'],
+                'mujeres_desertoras': desercion['mujeres']
+            }
+
+            # Actualizar valores para siguiente iteración
+            alumnos_periodo_anterior = alumnos_periodo
+            periodo_anterior = periodo
+
+        return {
+            'temp_data': temp_data,
+            'poblacion_nuevo_ingreso': poblacion_nuevo_ingreso,
+            'alumnos': alumnos
+        }
+
+    @abstractmethod
+    def process_response(self, base_data, periodos):
+        """Cada subclase implementa su procesamiento específico"""
+        pass
+
+    @abstractmethod
+    def calculate_rate(self, *args, **kwargs):
+        """Cada subclase implementa su cálculo de tasa"""
+        pass
+
 # APIView para obtener la cantidad de alumnos por carrera
-class IndicesPermanencia(APIView):
+class IndicesPermanencia(IndicesBase):
     """
     Vista para listar la cantidad de alumnos por carrera.
 
@@ -150,170 +257,59 @@ class IndicesPermanencia(APIView):
     # Método GET para obtener los datos
     def get(self, request, format=None):
         try:
-            nuevo_ingreso = request.GET.get('nuevo-ingreso')
-            traslado_equivalencia = request.GET.get('traslado-equivalencia')
-            # Si se obtiene el get de cohorte, se asigna a la variable cohorte, si no, se asigna el valor 20241
-            cohorte = request.GET.get('cohorte') if request.GET.get('cohorte') else '20241'
-            semestres = request.GET.get('semestres') if request.GET.get('semestres') else '9'
-            carrera = request.GET.get('carrera')
-
-            tipos = calcularTipos(nuevo_ingreso, traslado_equivalencia)
-
-            # Diccionario temporal para almacenar los datos de cada periodo
-            temp_data = {}
-            periodos = calcularPeriodos(cohorte, int(semestres) + 1) # Agregamos +1 para tener un periodo extra
-            poblacion_nuevo_ingreso = 0
-            alumnos = Ingreso.objects.filter(
-                tipo__in=tipos, periodo=cohorte, alumno__plan__carrera__pk=carrera
-            ).annotate(clave=F("alumno_id")).values("clave")
-            periodo_anterior = cohorte
-
-            # Primero, calculamos todos los datos y los guardamos en temp_data
-            for periodo in periodos:
-                if periodo == cohorte:
-                    poblacion_act = obtenerPoblacionActiva(tipos, alumnos, cohorte, carrera)
-                    poblacion_nuevo_ingreso = poblacion_act['poblacion']
-                    alumnos_periodo_anterior = alumnos
-                    alumnos_periodo = Ingreso.objects.filter(
-                        tipo__in=tipos, periodo=periodo, alumno_id__in=alumnos, alumno__plan__carrera__pk=carrera
-                    ).annotate(clave=F("alumno_id")).values("clave")
-                else:
-                    poblacion_act = obtenerPoblacionActiva(['RE'], alumnos, periodo, carrera)
-                    alumnos_periodo = Ingreso.objects.filter(
-                        tipo='RE', periodo=periodo, alumno_id__in=alumnos, alumno__plan__carrera__pk=carrera
-                    ).annotate(clave=F("alumno_id")).values("clave")
-                
-                poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
-                tasa_permanencia = calcularTasa(poblacion_act['poblacion'], poblacion_nuevo_ingreso)
-                egresados_periodo = Egreso.objects.filter(
-                    periodo=periodo_anterior, alumno_id__in=alumnos
-                ).annotate(clave=F("alumno_id")).values("clave")
-                desercion = calcularDesercion(alumnos_periodo_anterior, alumnos_periodo, egresados_periodo)
-                
-                # Guardar datos en diccionario temporal
-                temp_data[periodo] = {
-                    'hombres': poblacion_act['hombres'],
-                    'mujeres': poblacion_act['mujeres'],
-                    'hombres_egresados': poblacion_inactiva['egreso']['hombres'],
-                    'mujeres_egresadas': poblacion_inactiva['egreso']['mujeres'],
-                    'hombres_titulados': poblacion_inactiva['titulacion']['hombres'],
-                    'mujeres_tituladas': poblacion_inactiva['titulacion']['mujeres'],
-                    'hombres_desertores': desercion['hombres'],
-                    'mujeres_desertoras': desercion['mujeres'],
-                    'tasa_permanencia': tasa_permanencia
-                }
-
-                alumnos_periodo_anterior = alumnos_periodo
-                periodo_anterior = periodo
-
-            # Luego, construimos response_data desplazando los resultados un periodo
-            response_data = {}
-            logger.info(f"Periodos disponibles: {periodos}")
-            logger.info(f"Datos temporales disponibles: {temp_data.keys()}")
-
-            for i in range(len(periodos) - 1):  # Excluimos el último periodo
-                periodo_actual = periodos[i]
-                periodo_siguiente = periodos[i + 1]
-                
-                logger.info(f"Procesando: periodo_actual={periodo_actual}, periodo_siguiente={periodo_siguiente}")
-                
-                # Verificar si el periodo siguiente existe en temp_data
-                if periodo_siguiente in temp_data:
-                    response_data[periodo_actual] = temp_data[periodo_siguiente].copy()  # Usar copy() para evitar referencias
-                    logger.info(f"Datos copiados para {periodo_actual}: {response_data[periodo_actual]}")
-                else:
-                    logger.warning(f"No se encontraron datos para el periodo {periodo_siguiente}")
-
-                # Verificar que todos los campos necesarios estén presentes
-                if periodo_actual in response_data:
-                    required_fields = [
-                        'hombres', 'mujeres', 
-                        'hombres_egresados', 'mujeres_egresadas',
-                        'hombres_titulados', 'mujeres_tituladas',
-                        'hombres_desertores', 'mujeres_desertoras',
-                        'tasa_permanencia'
-                    ]
-                    
-                    missing_fields = [field for field in required_fields if field not in response_data[periodo_actual]]
-                    if missing_fields:
-                        logger.warning(f"Campos faltantes para {periodo_actual}: {missing_fields}")
-
-            logger.info(f"Periodos en response_data: {response_data.keys()}")
-            logger.info(f"Total de periodos procesados: {len(response_data)}")
-
-            # Construir response_data mezclando datos actuales con deserción siguiente
-            response_data = {}
-            for i in range(len(periodos) - 1):
-                periodo_actual = periodos[i]
-                periodo_siguiente = periodos[i + 1]
-                
-                if periodo_siguiente in temp_data:
-                    # Copiar datos del periodo actual
-                    response_data[periodo_actual] = temp_data[periodo_actual].copy()
-                    
-                    # Sobrescribir solo los datos de deserción con los del periodo siguiente
-                    response_data[periodo_actual]['hombres_desertores'] = temp_data[periodo_siguiente]['hombres_desertores']
-                    response_data[periodo_actual]['mujeres_desertoras'] = temp_data[periodo_siguiente]['mujeres_desertoras']
-                    
-                    # Recalcular tasa de permanencia con la deserción del siguiente periodo
-                    activos = temp_data[periodo_actual]['hombres'] + temp_data[periodo_actual]['mujeres']
-                    desertores_siguiente = (temp_data[periodo_siguiente]['hombres_desertores'] + 
-                                         temp_data[periodo_siguiente]['mujeres_desertoras'])
-                    
-                    tasa_permanencia = calcularTasa(activos - desertores_siguiente, poblacion_nuevo_ingreso)
-                    response_data[periodo_actual]['tasa_permanencia'] = tasa_permanencia
-                    
-                    logger.info(f"""
-                        Periodo {periodo_actual}:
-                        Activos: {activos}
-                        Desertores siguiente: {desertores_siguiente}
-                        Nueva tasa permanencia: {tasa_permanencia}
-                    """)
-                else:
-                    logger.warning(f"No se encontraron datos para el periodo {periodo_siguiente}")
-
-            # En el método get de IndicesPermanencia
-            for i in range(len(periodos) - 1):
-                periodo_actual = periodos[i]
-                periodo_siguiente = periodos[i + 1]
-                
-                if periodo_siguiente in temp_data:
-                    # Copiar datos del periodo actual
-                    response_data[periodo_actual] = temp_data[periodo_actual].copy()
-                    
-                    # Sobrescribir solo los datos de deserción con los del periodo siguiente
-                    response_data[periodo_actual]['hombres_desertores'] = temp_data[periodo_siguiente]['hombres_desertores']
-                    response_data[periodo_actual]['mujeres_desertoras'] = temp_data[periodo_siguiente]['mujeres_desertoras']
-                    
-                    # Recalcular tasa de permanencia considerando egresados y deserción
-                    activos = temp_data[periodo_actual]['hombres'] + temp_data[periodo_actual]['mujeres']
-                    egresados = (temp_data[periodo_actual]['hombres_egresados'] + 
-                                temp_data[periodo_actual]['mujeres_egresadas'])
-                    desertores_siguiente = (temp_data[periodo_siguiente]['hombres_desertores'] + 
-                                         temp_data[periodo_siguiente]['mujeres_desertoras'])
-                    
-                    # Nueva fórmula: (activos - egresados - desertores_siguiente) / poblacion_nuevo_ingreso
-                    activos_menos_bajas = activos - egresados - desertores_siguiente
-                    tasa_permanencia = calcularTasa(activos_menos_bajas, poblacion_nuevo_ingreso)
-                    response_data[periodo_actual]['tasa_permanencia'] = tasa_permanencia
-                    
-                    logger.info(f"""
-                        Periodo {periodo_actual}:
-                        Activos: {activos}
-                        Egresados: {egresados}
-                        Desertores siguiente: {desertores_siguiente}
-                        Activos - Egresados - Desertores: {activos_menos_bajas}
-                        Población nuevo ingreso: {poblacion_nuevo_ingreso}
-                        Nueva tasa permanencia: {tasa_permanencia}
-                    """)
-
+            # Obtener parámetros usando método de clase base
+            params = self.get_params(request)
+            tipos = calcularTipos(params['nuevo_ingreso'], params['traslado_equivalencia'])
+            periodos = calcularPeriodos(params['cohorte'], int(params['semestres']) + 1)
+            
+            # Obtener datos base
+            base_data = self.get_base_data(tipos, params['cohorte'], periodos, params['carrera'])
+            
+            # Procesar respuesta
+            response_data = self.process_response(base_data, periodos)
+            
             return Response(response_data)
+            
         except Exception as ex:
-            logger.error(f"Error en índices generacionales: {str(ex)}")
+            logger.error(f"Error en índices permanencia: {str(ex)}")
             return Response({'error': str(ex)}, status=500)
 
+    def process_response(self, base_data, periodos):
+        """Procesa response con tasas de permanencia"""
+        response_data = {}
+        temp_data = base_data['temp_data']
+        poblacion_nuevo_ingreso = base_data['poblacion_nuevo_ingreso']
+
+        for i in range(len(periodos) - 1):
+            periodo_actual = periodos[i]
+            periodo_siguiente = periodos[i + 1]
+            
+            if periodo_siguiente in temp_data:
+                response_data[periodo_actual] = temp_data[periodo_actual].copy()
+                
+                # Sobrescribir datos de deserción
+                response_data[periodo_actual]['hombres_desertores'] = temp_data[periodo_siguiente]['hombres_desertores']
+                response_data[periodo_actual]['mujeres_desertoras'] = temp_data[periodo_siguiente]['mujeres_desertoras']
+                
+                # Calcular tasa
+                activos = temp_data[periodo_actual]['hombres'] + temp_data[periodo_actual]['mujeres']
+                egresados = (temp_data[periodo_actual]['hombres_egresados'] + 
+                           temp_data[periodo_actual]['mujeres_egresadas'])
+                desertores = (temp_data[periodo_siguiente]['hombres_desertores'] + 
+                            temp_data[periodo_siguiente]['mujeres_desertoras'])
+                
+                tasa = self.calculate_rate(activos, egresados, desertores, poblacion_nuevo_ingreso)
+                response_data[periodo_actual]['tasa_permanencia'] = tasa
+
+        return response_data
+
+    def calculate_rate(self, activos, egresados, desertores, poblacion_nuevo_ingreso):
+        """Calcula tasa de permanencia"""
+        activos_menos_bajas = activos - egresados - desertores
+        return calcularTasa(activos_menos_bajas, poblacion_nuevo_ingreso)
+
 # APIView para obtener la cantidad de alumnos por carrera
-class IndicesEgreso(APIView):
+class IndicesEgreso(IndicesBase):
     """
     Vista para listar la cantidad de alumnos por carrera.
 
@@ -329,36 +325,40 @@ class IndicesEgreso(APIView):
 
     # Método GET para obtener los datos
     def get(self, request, format=None):
-        nuevo_ingreso = request.GET.get('nuevo-ingreso')
-        traslado_equivalencia = request.GET.get('traslado-equivalencia')
-        cohorte = request.GET.get('cohorte') if request.GET.get('cohorte') else '20241'
-        semestres = request.GET.get('semestres') if request.GET.get('semestres') else '9'
-        carrera = request.GET.get('carrera')
+        try:
+            params = self.get_params(request)
+            tipos = calcularTipos(params['nuevo_ingreso'], params['traslado_equivalencia'])
+            periodos = calcularPeriodos(params['cohorte'], int(params['semestres']))
+            base_data = self.get_base_data(tipos, params['cohorte'], periodos, params['carrera'])
+            response_data = self.process_response(base_data, periodos)
+            return Response(response_data)
+        except Exception as ex:
+            logger.error(f"Error en índices generacionales: {str(ex)}")
+            return Response({'error': str(ex)}, status=500)
 
-        tipos = calcularTipos(nuevo_ingreso, traslado_equivalencia)
-
-        response_data = {}
-        periodos = calcularPeriodos(cohorte, int(semestres))
-        poblacion_nuevo_ingreso = 0
+    def process_response(self, base_data, periodos):
+        temp_data = base_data['temp_data']
+        poblacion_nuevo_ingreso = base_data['poblacion_nuevo_ingreso']
         tasa_egreso = 0
-        alumnos = Ingreso.objects.filter(tipo__in=tipos, periodo=cohorte,alumno__plan__carrera__pk=carrera).annotate(clave=F("alumno_id")
-            ).values("clave")
-        # Se recorren los periodos
+        response_data = {}
+
         for periodo in periodos:
-            if periodo == cohorte:
-                poblacion_act = obtenerPoblacionActiva(tipos, alumnos, cohorte, carrera)
-                poblacion_nuevo_ingreso = poblacion_act['poblacion']
-            else:
-                poblacion_act = obtenerPoblacionActiva(['RE'], alumnos, periodo, carrera)
-            # Se obtiene la población inactiva del periodo actual
-            poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
-            # Se calcula la tasa de egreso
-            tasa_egreso += calcularTasa(poblacion_inactiva['egreso']['egresados'], poblacion_nuevo_ingreso)
-            # Se asignan los datos al diccionario de respuesta
-            response_data[periodo] = dict(hombres=poblacion_act['hombres'], mujeres=poblacion_act['mujeres'], hombres_egresados=poblacion_inactiva['egreso']['hombres'], mujeres_egresadas=poblacion_inactiva['egreso']['mujeres'], tasa_egreso=tasa_egreso)
-        return Response(response_data)
+            poblacion_inactiva = obtenerPoblacionInactiva(base_data['alumnos'], periodo)
+            tasa_egreso += self.calculate_rate(poblacion_inactiva['egreso']['egresados'], poblacion_nuevo_ingreso)
+            response_data[periodo] = dict(
+                hombres=temp_data[periodo]['hombres'], 
+                mujeres=temp_data[periodo]['mujeres'], 
+                hombres_egresados=temp_data[periodo]['hombres_egresados'], 
+                mujeres_egresadas=temp_data[periodo]['mujeres_egresadas'], 
+                tasa_egreso=tasa_egreso
+            )
+
+        return response_data
+
+    def calculate_rate(self, egresados, poblacion_nuevo_ingreso):
+        return calcularTasa(egresados, poblacion_nuevo_ingreso)
     
-class IndicesTitulacion(APIView):
+class IndicesTitulacion(IndicesBase):
     """
     Vista para listar la cantidad de alumnos por carrera.
 
@@ -373,136 +373,72 @@ class IndicesTitulacion(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, format=None):
-        nuevo_ingreso = request.GET.get('nuevo-ingreso')
-        traslado_equivalencia = request.GET.get('traslado-equivalencia')
-        cohorte = request.GET.get('cohorte') if request.GET.get('cohorte') else '20241'
-        semestres = request.GET.get('semestres') if request.GET.get('semestres') else '9'
-        carrera = request.GET.get('carrera')
+        try:
+            params = self.get_params(request)
+            tipos = calcularTipos(params['nuevo_ingreso'], params['traslado_equivalencia'])
+            periodos = calcularPeriodos(params['cohorte'], int(params['semestres']))
+            base_data = self.get_base_data(tipos, params['cohorte'], periodos, params['carrera'])
+            response_data = self.process_response(base_data, periodos)
+            return Response(response_data)
+        except Exception as ex:
+            logger.error(f"Error en índices generacionales: {str(ex)}")
+            return Response({'error': str(ex)}, status=500)
 
-        tipos = calcularTipos(nuevo_ingreso, traslado_equivalencia)
-
-        response_data = {}
-        periodos = calcularPeriodos(cohorte, int(semestres))
-        poblacion_nuevo_ingreso = 0
+    def process_response(self, base_data, periodos):
+        temp_data = base_data['temp_data']
+        poblacion_nuevo_ingreso = base_data['poblacion_nuevo_ingreso']
         tasa_titulacion = 0
-        alumnos = Ingreso.objects.filter(tipo__in=tipos, periodo=cohorte,alumno__plan__carrera__pk=carrera).annotate(clave=F("alumno_id")
-            ).values("clave")
-        for periodo in periodos:
-            if periodo == cohorte:
-                poblacion_act = obtenerPoblacionActiva(tipos, alumnos, cohorte, carrera)
-                poblacion_nuevo_ingreso = poblacion_act['poblacion']
-            else:
-                poblacion_act = obtenerPoblacionActiva(['RE'], alumnos, periodo, carrera)
-            poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
+        response_data = {}
 
-            # Se calcula la tasa de titulación, se obtiene de la población inactiva
-            tasa_titulacion += calcularTasa(poblacion_inactiva['titulacion']['titulados'], poblacion_nuevo_ingreso)
+        for periodo in periodos:
+            poblacion_inactiva = obtenerPoblacionInactiva(base_data['alumnos'], periodo)
+            tasa_titulacion += self.calculate_rate(poblacion_inactiva['titulacion']['titulados'], poblacion_nuevo_ingreso)
             response_data[periodo] = dict(
-                hombres=poblacion_act['hombres'], 
-                mujeres=poblacion_act['mujeres'], 
-                hombres_egresados=poblacion_inactiva['egreso']['hombres'], 
-                mujeres_egresadas=poblacion_inactiva['egreso']['mujeres'], 
-                hombres_titulados=poblacion_inactiva['titulacion']['hombres'], 
-                mujeres_tituladas=poblacion_inactiva['titulacion']['mujeres'], 
+                hombres=temp_data[periodo]['hombres'], 
+                mujeres=temp_data[periodo]['mujeres'], 
+                hombres_egresados=temp_data[periodo]['hombres_egresados'], 
+                mujeres_egresadas=temp_data[periodo]['mujeres_egresadas'], 
+                hombres_titulados=temp_data[periodo]['hombres_titulados'], 
+                mujeres_tituladas=temp_data[periodo]['mujeres_tituladas'], 
                 tasa_titulacion=tasa_titulacion
             )
 
-        return Response(response_data)
+        return response_data
 
-class IndicesDesercion(APIView):
+    def calculate_rate(self, titulados, poblacion_nuevo_ingreso):
+        return calcularTasa(titulados, poblacion_nuevo_ingreso)
+
+class IndicesDesercion(IndicesBase):
     """
-    Vista para listar la cantidad de alumnos por carrera.
-
+    Vista para listar los índices de deserción.
     * Requiere autenticación por token.
-
-    ** nuevo-ingreso: Alumnos ingresando en 1er por examen o convalidacion
-    ** traslado-equivalencia: Alumnos ingresando de otro TEC u otra escuela
-    ** cohorte: El periodo donde empezara el calculo
-    ** semestres: Cuantos semestres seran calculados desde el cohorte
-    ** carrera: El programa educativo que se esta midiendo
     """
-    permission_classes = [permissions.IsAuthenticated]
-
     def get(self, request, format=None):
-        nuevo_ingreso = request.GET.get('nuevo-ingreso')
-        traslado_equivalencia = request.GET.get('traslado-equivalencia')
-        cohorte = request.GET.get('cohorte') if request.GET.get('cohorte') else '20241'
-        semestres = request.GET.get('semestres') if request.GET.get('semestres') else '9'
-        carrera = request.GET.get('carrera')
+        try:
+            # Obtener parámetros usando método de clase base
+            params = self.get_params(request)
+            tipos = calcularTipos(params['nuevo_ingreso'], params['traslado_equivalencia'])
+            periodos = calcularPeriodos(params['cohorte'], int(params['semestres']) + 1)
+            
+            # Obtener datos base
+            base_data = self.get_base_data(tipos, params['cohorte'], periodos, params['carrera'])
+            
+            # Procesar respuesta
+            response_data = self.process_response(base_data, periodos)
+            
+            return Response(response_data)
+            
+        except Exception as ex:
+            logger.error(f"Error en índices deserción: {str(ex)}")
+            return Response({'error': str(ex)}, status=500)
 
-        tipos = calcularTipos(nuevo_ingreso, traslado_equivalencia)
-
-        temp_data = {}
-        periodos = calcularPeriodos(cohorte, int(semestres) + 1) # Agregamos +1 para tener un periodo extra
-        poblacion_nuevo_ingreso = 0
-        desercion_total = 0
-        alumnos = Ingreso.objects.filter(tipo__in=tipos, periodo=cohorte,alumno__plan__carrera__pk=carrera).annotate(clave=F("alumno_id")
-            ).values("clave")
-        periodo_anterior = cohorte
-
-        # Primer ciclo - Recolección de datos iniciales
-        for periodo in periodos:
-            if periodo == cohorte:
-                poblacion_act = obtenerPoblacionActiva(tipos, alumnos, periodo, carrera)
-                poblacion_nuevo_ingreso = poblacion_act['poblacion']
-                alumnos_periodo_anterior = alumnos
-                alumnos_periodo = Ingreso.objects.filter(
-                    tipo__in=tipos, 
-                    periodo=periodo, 
-                    alumno_id__in=alumnos, 
-                    alumno__plan__carrera__pk=carrera
-                ).annotate(
-                    clave=F("alumno_id")
-                ).values("clave")
-            else:
-                poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)  # Para otros datos inactivos
-                alumnos_periodo = Ingreso.objects.filter(
-                    tipo='RE', 
-                    periodo=periodo, 
-                    alumno_id__in=alumnos, 
-                    alumno__plan__carrera__pk=carrera
-                ).annotate(
-                    clave=F("alumno_id")
-                ).values("clave")
-            poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
-
-            egresados_periodo = Egreso.objects.filter(periodo=periodo, alumno_id__in=alumnos).annotate(clave=F("alumno_id")).values("clave")
-
-            desercion = calcularDesercion(alumnos_periodo_anterior, alumnos_periodo, egresados_periodo)
-            alumnos_periodo_anterior = alumnos_periodo
-            desercion_total += desercion['hombres'] + desercion['mujeres']
-            tasa_desercion = calcularTasa(desercion_total, poblacion_nuevo_ingreso)
-
-            periodo_anterior = periodo
-            temp_data[periodo] = dict(
-                hombres=poblacion_act['hombres'], 
-                mujeres=poblacion_act['mujeres'], 
-                hombres_egresados=poblacion_inactiva['egreso']['hombres'], 
-                mujeres_egresadas=poblacion_inactiva['egreso']['mujeres'], 
-                hombres_desertores=desercion['hombres'], 
-                mujeres_desertoras=desercion['mujeres'], 
-                tasa_desercion=tasa_desercion
-            )
-        # Luego, construimos response_data desplazando los resultados un periodo
+    def process_response(self, base_data, periodos):
+        """Procesa response con tasas de deserción"""
         response_data = {}
-        logger.info(f"Periodos disponibles: {periodos}")
-        logger.info(f"Datos temporales disponibles: {temp_data.keys()}")
-
-        for i in range(len(periodos) - 1):  # Excluimos el último periodo
-            periodo_actual = periodos[i]
-            periodo_siguiente = periodos[i + 1]
-                
-            logger.info(f"Procesando: periodo_actual={periodo_actual}, periodo_siguiente={periodo_siguiente}")
-                
-            # Verificar si el periodo siguiente existe en temp_data
-            if periodo_siguiente in temp_data:
-                response_data[periodo_actual] = temp_data[periodo_siguiente].copy()  # Usar copy() para evitar referencias
-                logger.info(f"Datos copiados para {periodo_actual}: {response_data[periodo_actual]}")
-            else:
-                logger.warning(f"No se encontraron datos para el periodo {periodo_siguiente}")
-
-        # Modificar el tercer ciclo
+        temp_data = base_data['temp_data']
+        poblacion_nuevo_ingreso = base_data['poblacion_nuevo_ingreso']
         desercion_acumulada = 0
+
         for i in range(len(periodos) - 1):
             periodo_actual = periodos[i]
             periodo_siguiente = periodos[i + 1]
@@ -511,59 +447,28 @@ class IndicesDesercion(APIView):
                 # Copiar datos base del periodo actual
                 response_data[periodo_actual] = temp_data[periodo_actual].copy()
                 
-                # Obtener población activa del periodo actual
-                if periodo_actual == periodos[0]:
-                    poblacion_act = obtenerPoblacionActiva(tipos, alumnos, periodo_actual, carrera)
-                else:
-                    poblacion_act = obtenerPoblacionActiva(['RE'], alumnos, periodo_actual, carrera)
+                # Sobrescribir datos de deserción con los del periodo siguiente
+                response_data[periodo_actual]['hombres_desertores'] = temp_data[periodo_siguiente]['hombres_desertores']
+                response_data[periodo_actual]['mujeres_desertoras'] = temp_data[periodo_siguiente]['mujeres_desertoras']
                 
-                # Obtener desertores y egresados
-                if i == len(periodos) - 2:  # Si es el 9no semestre
-                    # Usar los desertores del periodo actual
-                    desertores_h = temp_data[periodo_actual]['hombres_desertores']
-                    desertores_m = temp_data[periodo_actual]['mujeres_desertoras']
-                else:
-                    # Usar los desertores del siguiente periodo
-                    desertores_h = temp_data[periodo_siguiente]['hombres_desertores']
-                    desertores_m = temp_data[periodo_siguiente]['mujeres_desertoras']
-                
-                egresados_h = temp_data[periodo_actual]['hombres_egresados']
-                egresados_m = temp_data[periodo_actual]['mujeres_egresadas']
-                
-                # Actualizar datos en response
-                response_data[periodo_actual].update({
-                    'hombres': poblacion_act['hombres'],
-                    'mujeres': poblacion_act['mujeres'],
-                    'hombres_desertores': desertores_h,
-                    'mujeres_desertoras': desertores_m,
-                    'hombres_egresados': egresados_h,
-                    'mujeres_egresadas': egresados_m
-                })
+                # Calcular deserción del periodo
+                desertores = (temp_data[periodo_siguiente]['hombres_desertores'] + 
+                            temp_data[periodo_siguiente]['mujeres_desertoras'])
                 
                 # Actualizar deserción acumulada
-                desercion_periodo = desertores_h + desertores_m
-                desercion_acumulada += desercion_periodo
+                desercion_acumulada += desertores
                 
-                # Calcular tasa con deserción acumulada
-                response_data[periodo_actual]['tasa_desercion'] = calcularTasa(
-                    desercion_acumulada,
-                    poblacion_nuevo_ingreso
-                )
-                
-                logger.info(f"""
-                    Periodo {periodo_actual}:
-                    Activos H: {poblacion_act['hombres']}
-                    Activos M: {poblacion_act['mujeres']}
-                    Total Activos: {poblacion_act['hombres'] + poblacion_act['mujeres']}
-                    Desertores H: {desertores_h}
-                    Desertores M: {desertores_m}
-                    Deserción acumulada: {desercion_acumulada}
-                    Tasa deserción: {response_data[periodo_actual]['tasa_desercion']}
-                """)
+                # Calcular tasa de deserción
+                tasa = self.calculate_rate(desercion_acumulada, poblacion_nuevo_ingreso)
+                response_data[periodo_actual]['tasa_desercion'] = tasa
 
-        return Response(response_data)
+        return response_data
+
+    def calculate_rate(self, desercion_total, poblacion_nuevo_ingreso):
+        """Calcula tasa de deserción"""
+        return calcularTasa(desercion_total, poblacion_nuevo_ingreso)
     
-class IndicesGeneracionalDesercion(APIView):
+class IndicesGeneracionalDesercion(IndicesBase):
     """
     Vista para listar los índices de deserción por generación.
 
@@ -711,7 +616,7 @@ class IndicesGeneracionalDesercion(APIView):
                 status=500
             )
         
-class IndicesGeneracionalPermanencia(APIView):
+class IndicesGeneracionalPermanencia(IndicesBase):
     """
     Vista para listar los índices de permanencia por generación.
 
@@ -836,7 +741,7 @@ class IndicesGeneracionalPermanencia(APIView):
                 status=500
             )
 
-class IndicesGeneracionalEgreso(APIView):
+class IndicesGeneracionalEgreso(IndicesBase):
     """
     Vista para listar los índices de egreso por generación.
 
