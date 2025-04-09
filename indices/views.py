@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 def calcularTasa(poblacion, poblacion_nuevo_ingreso):
     if poblacion_nuevo_ingreso > 0:
         tasa_permanencia = Decimal((poblacion*100)/poblacion_nuevo_ingreso)
-        tasa_permanencia = round(tasa_permanencia, 2)
+        tasa_permanencia = round(tasa_permanencia, 1)
     else:
         tasa_permanencia = 0
     return tasa_permanencia
@@ -468,7 +468,7 @@ class IndicesDesercion(IndicesBase):
         """Calcula tasa de deserción"""
         return calcularTasa(desercion_total, poblacion_nuevo_ingreso)
     
-class IndicesGeneracionalDesercion(IndicesBase):
+class IndicesGeneracionalDesercion(APIView):
     """
     Vista para listar los índices de deserción por generación.
 
@@ -616,7 +616,7 @@ class IndicesGeneracionalDesercion(IndicesBase):
                 status=500
             )
         
-class IndicesGeneracionalPermanencia(IndicesBase):
+class IndicesGeneracionalPermanencia(APIView):
     """
     Vista para listar los índices de permanencia por generación.
 
@@ -741,7 +741,7 @@ class IndicesGeneracionalPermanencia(IndicesBase):
                 status=500
             )
 
-class IndicesGeneracionalEgreso(IndicesBase):
+class IndicesGeneracionalEgreso(APIView):
     """
     Vista para listar los índices de egreso por generación.
 
@@ -869,15 +869,24 @@ class IndicesGeneracionalEgreso(IndicesBase):
 # Función para calcular los desertores
 def calcularDesercion(lista_alumnos_periodo_anterior, lista_alumnos_periodo_actual, lista_alumnos_egresados):
     desertores = {'hombres': 0, 'mujeres': 0}
-    # Se recorren los alumnos del periodo anterior
-    for alumno in lista_alumnos_periodo_anterior:
-        # Si el alumno no se encuentra en la lista de alumnos del periodo actual
-        if alumno not in lista_alumnos_periodo_actual:
-            # Si el alumno no se encuentra en la lista de alumnos egresados
-            if alumno not in lista_alumnos_egresados:
-                datos_alumno = Personal.objects.get(alumno__no_control=alumno['clave'])
-                if datos_alumno.genero == 'H':
-                    desertores['hombres'] += 1
-                elif datos_alumno.genero == 'M':
-                    desertores['mujeres'] += 1
+    alumnos_actuales = {alumno['clave'] for alumno in lista_alumnos_periodo_actual}
+    alumnos_anteriores = {alumno['clave'] for alumno in lista_alumnos_periodo_anterior}
+    egresados = {alumno['clave'] for alumno in lista_alumnos_egresados}
+    
+    # Encontrar alumnos que desertaron (estaban antes pero ya no están y no egresaron)
+    for alumno_clave in alumnos_anteriores - alumnos_actuales - egresados:
+        datos_alumno = Personal.objects.get(alumno__no_control=alumno_clave)
+        if datos_alumno.genero == 'H':
+            desertores['hombres'] += 1
+        elif datos_alumno.genero == 'M':
+            desertores['mujeres'] += 1
+
+    # Encontrar alumnos que reingresaron (no estaban antes pero ahora sí)
+    for alumno_clave in alumnos_actuales - alumnos_anteriores:
+        datos_alumno = Personal.objects.get(alumno__no_control=alumno_clave)
+        if datos_alumno.genero == 'H':
+            desertores['hombres'] -= 1  # Restar para indicar reingreso
+        elif datos_alumno.genero == 'M':
+            desertores['mujeres'] -= 1  # Restar para indicar reingreso
+            
     return desertores
