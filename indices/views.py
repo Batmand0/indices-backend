@@ -305,7 +305,7 @@ class IndicesPermanencia(IndicesBase):
 
     def calculate_rate(self, activos, egresados, desertores, poblacion_nuevo_ingreso):
         """Calcula tasa de permanencia"""
-        activos_menos_bajas = activos - egresados - desertores
+        activos_menos_bajas = activos + egresados - desertores
         return calcularTasa(activos_menos_bajas, poblacion_nuevo_ingreso)
 
 # APIView para obtener la cantidad de alumnos por carrera
