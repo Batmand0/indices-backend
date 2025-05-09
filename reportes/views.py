@@ -55,6 +55,18 @@ def obtenerPoblacionNuevoIngreso(tipos_ingreso, periodos, carreras):
         total=Count('pk')
     )
 
+def obtenerPoblacionNuevoIngresoCarrera(tipos, cohorte, carrera_pk):
+    """Obtiene población de nuevo ingreso para una carrera en su cohorte"""
+    return Ingreso.objects.filter(
+        tipo__in=tipos,
+        periodo=cohorte,
+        alumno__plan__carrera__pk=carrera_pk
+    ).aggregate(
+        poblacion=Count('pk'),
+        hombres=Count('pk', filter=Q(alumno__curp__genero='H')),
+        mujeres=Count('pk', filter=Q(alumno__curp__genero='M'))
+    )
+
 def obtenerPoblacionEgresoMultiple(tipos, cohorte, periodos, carrera_pk):
     """Obtiene población de egreso para múltiples periodos"""
     # Primero obtenemos los alumnos de nuevo ingreso
@@ -115,16 +127,6 @@ class ReportesBase(APIView):
             return Response({'error': str(e)}, status=500)
 
 class ReportesNuevoIngreso(ReportesBase):
-    """
-    Vista para listar la cantidad de alumnos de nuevo ingreso por carrera.
-
-    * Requiere autenticación por token.
-
-    ** nuevo-ingreso: Alumnos ingresando en 1er por examen o convalidacion
-    ** traslado-equivalencia: Alumnos ingresando de otro TEC u otra escuela
-    ** cohorte: El periodo donde empezara el calculo
-    ** semestres: Cuantos semestres seran calculados desde el cohorte
-    """
     def process_response(self, data):
         response_data = {}
         poblacion_data = obtenerPoblacionNuevoIngreso(
@@ -140,7 +142,7 @@ class ReportesNuevoIngreso(ReportesBase):
                     (item for item in poblacion_data 
                      if item['periodo'] == periodo and 
                      item['alumno__plan__carrera__pk'] == plan['clave']),
-                    {'hombres': 0, 'mujeres': 0}
+                    {'hombres': 0, 'mujeres': 0, 'total': 0}
                 )
                 
                 plan_regs[periodo] = {
@@ -157,13 +159,13 @@ class ReportesEgreso(ReportesBase):
     def process_response(self, data):
         response_data = {}
         
-        # Obtener alumnos de nuevo ingreso por carrera
         for carrera in data['carreras']:
-            poblacion_nuevo_ingreso = Ingreso.objects.filter(
-                tipo__in=data['tipos'],
-                periodo=data['cohorte'],
-                alumno__plan__carrera__pk=carrera['clave']
-            ).count()
+            # Obtener nuevo ingreso del cohorte
+            poblacion_inicial = obtenerPoblacionNuevoIngresoCarrera(
+                data['tipos'], 
+                data['cohorte'], 
+                carrera['clave']
+            )
 
             # Calcular periodos de egreso
             periodos_egreso = []
@@ -202,63 +204,93 @@ class ReportesEgreso(ReportesBase):
                 }
 
             registros__semestres['total_1'] = {'valor': egreso_total['total']}
-            tasa_egreso = calcularTasa(egreso_total['total'], poblacion_nuevo_ingreso)
+            tasa_egreso = calcularTasa(egreso_total['total'], poblacion_inicial['poblacion'])
             registros__semestres['tasa_egreso_1'] = {'valor': f"{tasa_egreso} %"}
 
-            # ... resto del código para semestres > 12 ...
+            if semestres > 12:
+                egreso_total_2 = {'total': 0, 'hombres': 0, 'mujeres': 0}
+                for i in range(12, semestres):
+                    datos_periodo = next(
+                        (item for item in egreso_data 
+                         if item['periodo'] == data['periodos'][i]),
+                        {'hombres': 0, 'mujeres': 0, 'total': 0}
+                    )
+                    egreso_total_2['total'] += datos_periodo['total']
+                    egreso_total_2['hombres'] += datos_periodo['hombres']
+                    egreso_total_2['mujeres'] += datos_periodo['mujeres']
+
+                registros__semestres[13] = {
+                    'hombres': egreso_total_2['hombres'],
+                    'mujeres': egreso_total_2['mujeres']
+                }
+                tasa_egreso_2 = calcularTasa(egreso_total_2['total'], poblacion_inicial['poblacion'])
+                registros__semestres['tasa_egreso_2'] = {'valor': f"{tasa_egreso_2} %"}
 
             response_data[carrera['nombre']] = {
                 'carrera': carrera['nombre'],
-                'poblacion_nuevo_ingreso': {'poblacion': poblacion_nuevo_ingreso},
+                'poblacion_nuevo_ingreso': {
+                    'poblacion': poblacion_inicial['poblacion'],
+                    'hombres': poblacion_inicial['hombres'],
+                    'mujeres': poblacion_inicial['mujeres']
+                },
                 'registros': registros__semestres
             }
 
         return response_data
 
 class ReportesTitulacion(ReportesBase):
-    """
-    Vista para listar la cantidad de alumnos de nuevo ingreso por carrera.
-
-    * Requiere autenticación por token.
-
-    ** nuevo-ingreso: Alumnos ingresando en 1er por examen o convalidacion
-    ** traslado-equivalencia: Alumnos ingresando de otro TEC u otra escuela
-    ** cohorte: El periodo donde empezara el calculo
-    ** semestres: Cuantos semestres seran calculados desde el cohorte
-    """
     def process_response(self, data):
         response_data = {}
-        carreras = Carrera.objects.select_related('clave__plan').values_list('clave', 'plan', 'nombre')
+        
+        for carrera in data['carreras']:
+            # Obtener nuevo ingreso del cohorte
+            poblacion_inicial = obtenerPoblacionNuevoIngresoCarrera(
+                data['tipos'], 
+                data['cohorte'], 
+                carrera['clave']
+            )
 
-        for carrera in carreras:
             alumnos = (Ingreso.objects
                 .filter(tipo__in=data['tipos'], 
                        periodo=data['cohorte'],
-                       alumno__plan__carrera__pk=carrera[0])
-                .annotate(clave=F("alumno_id"))
-                .values("clave"))
+                       alumno__plan__carrera__pk=carrera['clave'])
+                .values('alumno_id'))
 
             registros__semestres = {}
-            poblacion_nuevo_ingreso = obtenerPoblacionActiva(data['tipos'], alumnos, data['cohorte'], carrera[0])
             
             titulados_total = crearTotales()
             for i in range(8, int(data['semestres']) if int(data['semestres']) <= 12 else 12):
                 titulados_periodo = obtenerPoblacionTitulada(alumnos, data['periodos'][i])
                 titulados_total = actualizarTotales(titulados_total, titulados_periodo)
-                registros__semestres[i+1] = dict(hombres=titulados_periodo['hombres'], mujeres=titulados_periodo['mujeres'])
+                registros__semestres[i+1] = {
+                    'hombres': titulados_periodo['hombres'],
+                    'mujeres': titulados_periodo['mujeres']
+                }
 
-            registros__semestres['total_1'] = dict(valor=titulados_total['total'])
-            tasa_titulados = calcularTasa(titulados_total['total'], poblacion_nuevo_ingreso['poblacion'])
-            registros__semestres['tasa_titulacion_1'] = dict(valor="{tasa_titulados} %".format(tasa_titulados=tasa_titulados))
+            registros__semestres['total_1'] = {'valor': titulados_total['total']}
+            tasa_titulados = calcularTasa(titulados_total['total'], poblacion_inicial['poblacion'])
+            registros__semestres['tasa_titulacion_1'] = {'valor': f"{tasa_titulados} %"}
 
-            titulados_total = crearTotales()
             if int(data['semestres']) > 12:
+                titulados_total_2 = crearTotales()
                 for i in range(12, int(data['semestres'])):
                     titulados_periodo = obtenerPoblacionTitulada(alumnos, data['periodos'][i])
-                    titulados_total = actualizarTotales(titulados_total, titulados_periodo)
-                registros__semestres[13] = dict(hombres=titulados_total['hombres'], mujeres=titulados_total['mujeres'])
-                tasa_titulados = calcularTasa(titulados_total['total'], poblacion_nuevo_ingreso['poblacion'])
-                registros__semestres['tasa_titulacion_2'] = dict(valor="{tasa_titulados} %".format(tasa_titulados=tasa_titulados))
-            response_data[carrera[2]] = dict(poblacion_nuevo_ingreso=poblacion_nuevo_ingreso , registros=registros__semestres)
+                    titulados_total_2 = actualizarTotales(titulados_total_2, titulados_periodo)
+                registros__semestres[13] = {
+                    'hombres': titulados_total_2['hombres'],
+                    'mujeres': titulados_total_2['mujeres']
+                }
+                tasa_titulados_2 = calcularTasa(titulados_total_2['total'], poblacion_inicial['poblacion'])
+                registros__semestres['tasa_titulacion_2'] = {'valor': f"{tasa_titulados_2} %"}
+
+            response_data[carrera['nombre']] = {
+                'carrera': carrera['nombre'],
+                'poblacion_nuevo_ingreso': {
+                    'poblacion': poblacion_inicial['poblacion'],
+                    'hombres': poblacion_inicial['hombres'],
+                    'mujeres': poblacion_inicial['mujeres']
+                },
+                'registros': registros__semestres
+            }
 
         return response_data
