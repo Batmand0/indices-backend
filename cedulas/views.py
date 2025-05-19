@@ -9,157 +9,250 @@ from registros.models import Ingreso, Egreso, Titulacion
 from registros.periodos import calcularPeriodos, getPeriodoActual
 
 from decimal import Decimal
+
 class CedulasCACEI(APIView):
-    """
-    Vista para generar la tabla de cédulas CACEI.
-
-    * Requiere autenticación por token.
-
-    ** nuevo-ingreso: Alumnos ingresando en 1er por examen o convalidacion
-    ** traslado-equivalencia: Alumnos ingresando de otro TEC u otra escuela
-    ** cohorte: El periodo donde empezara el calculo
-    ** semestres: Cuantos semestres seran calculados desde el cohorte
-    ** carrera: El programa educativo que se esta midiendo
-    """
+    """Vista para generar la tabla de cédulas CACEI."""
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_population_data(self, tipos, periodo, carrera):
+        """Obtiene datos de población en una sola consulta"""
+        return Ingreso.objects.filter(
+            periodo=periodo
+        ).aggregate(
+            poblacion_total=Count('pk', filter=Q(tipo__in=tipos)),
+            poblacion_carrera=Count('pk', filter=Q(
+                tipo__in=tipos, 
+                alumno__plan__carrera__pk=carrera
+            ))
+        )
+
+    def get_alumni_data(self, alumnos_carrera, periodo_inicio, periodo_fin):
+        """Obtiene datos de egreso y titulación en una sola consulta"""
+        return {
+            'egresados': Egreso.objects.filter(
+                alumno_id__in=alumnos_carrera,
+                periodo__gte=periodo_inicio,
+                periodo__lte=periodo_fin
+            ).count(),
+            'titulados': Titulacion.objects.filter(
+                alumno_id__in=alumnos_carrera,
+                periodo__gte=periodo_inicio,
+                periodo__lte=periodo_fin
+            ).count()
+        }
+
+    def format_period(self, periodo):
+        """Formatea el periodo para mostrar"""
+        if periodo.endswith('1'):
+            return f"2/{periodo}"
+        return f"8/{periodo}"
+
     def get(self, request, format=None):
-        nuevo_ingreso = request.GET.get('nuevo-ingreso')
-        traslado_equivalencia = request.GET.get('traslado-equivalencia')
-        cohorte = request.GET.get('cohorte') if request.GET.get('cohorte') else getPeriodoActual()
-        carrera = request.GET.get('carrera')
+        try:
+            # Obtener parámetros
+            tipos = []
+            if request.GET.get('nuevo-ingreso'):
+                tipos.extend(['EX', 'CO'])
+            if request.GET.get('traslado-equivalencia'):
+                tipos.extend(['TR', 'EQ'])
+            
+            cohorte = request.GET.get('cohorte', getPeriodoActual())
+            carrera = request.GET.get('carrera')
 
-        tipos = []
-        if nuevo_ingreso:
-            tipos.extend(['EX', 'CO'])
-        if traslado_equivalencia:
-            tipos.extend(['TR', 'EQ'])
+            # Calcular períodos una sola vez
+            periodos = calcularPeriodos(cohorte, 24)
+            response_data = {}
 
-        response_data = {}
-        periodoInicial = cohorte
-        periodos = calcularPeriodos(periodoInicial, int(24))
-        inicioP = 0
-        for gen in range(10):
-            poblacion_nuevo_ingreso = 0
-            alumnos_total = Count("alumno__plan__carrera__pk", filter=Q(tipo__in=tipos, periodo=periodoInicial))
-            poblacion_total = Ingreso.objects.aggregate(poblacion=alumnos_total)
-            alumnos_carrera = Ingreso.objects.filter(tipo__in=tipos, periodo=periodoInicial,alumno__plan__carrera__pk=carrera).annotate(clave=F("alumno_id")
-                ).values("clave")
-            poblacion_egr = 0
-            poblacion_titulo = 0
-            # print(list(filter(lambda p: periodos.index(p) >= inicioP and periodos.index(p) < (inicioP+14), periodos)))
-            for i, periodo in enumerate(list(filter(lambda p: periodos.index(p) >= inicioP and periodos.index(p) <= (inicioP+10), periodos))):
-                if periodo == periodoInicial:
-                    activos = Count("alumno__plan__carrera__pk", filter=Q(tipo__in=tipos, periodo=periodos[inicioP],alumno__plan__carrera__pk=carrera))
-                    poblacion_act = Ingreso.objects.aggregate(poblacion=activos)
-                    poblacion_nuevo_ingreso = poblacion_act['poblacion']
-                else:
-                    activos = Count("alumno__plan__carrera__pk", filter=Q(tipo='RE', periodo=periodo, alumno__plan__carrera__pk=carrera))
-                    poblacion_act = Ingreso.objects.aggregate(poblacion=activos)
-                inactivos = Count("alumno__plan__carrera__pk", filter=Q(alumno_id__in=alumnos_carrera, periodo=periodo))
-                if int(i) < 10:
-                    poblacion_titulo = poblacion_titulo + Titulacion.objects.aggregate(titulados=inactivos)['titulados']
-                poblacion_egr = poblacion_egr + Egreso.objects.aggregate(egresados=inactivos)['egresados']
-            if poblacion_nuevo_ingreso == 0:
-                tasa_egreso = 0
-                tasa_titulo = 0
-            else :
-                tasa_egreso = Decimal((poblacion_egr*100)/poblacion_nuevo_ingreso)
-                tasa_egreso = round(tasa_egreso, 2)
-                tasa_titulo = Decimal((poblacion_titulo*100)/poblacion_nuevo_ingreso)
-                tasa_titulo = round(tasa_titulo, 2)
-            if poblacion_total['poblacion'] == 0:
-                porcentaje_alumnos_carrera = 0
-            else :
-                porcentaje_alumnos_carrera = Decimal((poblacion_nuevo_ingreso*100)/poblacion_total['poblacion'])
-                porcentaje_alumnos_carrera = round(porcentaje_alumnos_carrera, 2)
-            inicio = ""
-            fin = ""
-            if periodos[inicioP].endswith('1'):
-                inicio = "2/{p}".format(p=periodos[inicioP])
-            else:
-                inicio = "8/{p}".format(p=periodos[inicioP])
-            if periodos[inicioP+8].endswith('1'):
-                fin = "6/{p}".format(p=periodos[inicioP+8])
-            else:
-                fin = "12/{p}".format(p=periodos[inicioP+8])
-            generacion = "{inicio} - {fin}".format(inicio=inicio, fin=fin)
-            response_data[generacion] = dict(poblacion_total=poblacion_total['poblacion'], poblacion=poblacion_nuevo_ingreso, porcentaje_alumnos_carrera=porcentaje_alumnos_carrera, egresados=poblacion_egr, tasa_egreso=tasa_egreso, titulados=poblacion_titulo, tasa_titulacion=tasa_titulo)
-            inicioP += 1
-            periodoInicial = periodos[inicioP]
+            # Procesar generaciones
+            for gen in range(10):
+                periodo_inicial = periodos[gen]
+                periodo_final = periodos[gen + 8]
 
-        return Response(response_data)
+                # Obtener alumnos de la carrera una sola vez
+                alumnos_carrera = list(Ingreso.objects.filter(
+                    tipo__in=tipos,
+                    periodo=periodo_inicial,
+                    alumno__plan__carrera__pk=carrera
+                ).values_list('alumno_id', flat=True))
+
+                # Obtener datos de población
+                poblacion_data = self.get_population_data(tipos, periodo_inicial, carrera)
+                poblacion_total = poblacion_data['poblacion_total']
+                poblacion_nuevo_ingreso = poblacion_data['poblacion_carrera']
+
+                # Obtener datos de egreso y titulación
+                alumni_data = self.get_alumni_data(
+                    alumnos_carrera, 
+                    periodo_inicial, 
+                    periodo_final
+                )
+
+                # Calcular tasas
+                tasa_egreso = round(
+                    (alumni_data['egresados'] * 100 / poblacion_nuevo_ingreso)
+                    if poblacion_nuevo_ingreso > 0 else 0, 
+                    2
+                )
+                tasa_titulo = round(
+                    (alumni_data['titulados'] * 100 / poblacion_nuevo_ingreso)
+                    if poblacion_nuevo_ingreso > 0 else 0, 
+                    2
+                )
+                porcentaje_alumnos = round(
+                    (poblacion_nuevo_ingreso * 100 / poblacion_total)
+                    if poblacion_total > 0 else 0,
+                    2
+                )
+
+                # Formar generación
+                generacion = f"{self.format_period(periodo_inicial)} - {self.format_period(periodo_final)}"
+
+                # Guardar resultados
+                response_data[generacion] = {
+                    'poblacion_total': poblacion_total,
+                    'poblacion': poblacion_nuevo_ingreso,
+                    'porcentaje_alumnos_carrera': porcentaje_alumnos,
+                    'egresados': alumni_data['egresados'],
+                    'tasa_egreso': tasa_egreso,
+                    'titulados': alumni_data['titulados'],
+                    'tasa_titulacion': tasa_titulo
+                }
+
+            return Response(response_data)
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
 
 class CedulasCACECA(APIView):
-    """
-    Vista para generar la tabla de cédulas CACECA.
-
-    * Requiere autenticación por token.
-
-    ** nuevo-ingreso: Alumnos ingresando en 1er por examen o convalidacion
-    ** traslado-equivalencia: Alumnos ingresando de otro TEC u otra escuela
-    ** cohorte: El periodo donde empezara el calculo
-    ** carrera: El programa educativo que se esta midiendo
-    """
+    """Vista para generar la tabla de cédulas CACECA."""
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_population_data(self, tipos, periodo, carrera):
+        """Obtiene datos de población inicial en una sola consulta"""
+        alumnos = Ingreso.objects.filter(
+            tipo__in=tipos,
+            periodo=periodo,
+            alumno__plan__carrera__pk=carrera
+        ).values_list('alumno_id', flat=True)
+
+        poblacion = Ingreso.objects.filter(
+            tipo__in=tipos,
+            periodo=periodo,
+            alumno_id__in=alumnos,
+            alumno__plan__carrera__pk=carrera
+        ).count()
+
+        return {
+            'alumnos': list(alumnos),
+            'poblacion': poblacion
+        }
+
+    def get_tracking_data(self, alumnos, periodo_inicio, periodo_fin, carrera):
+        """Obtiene datos de seguimiento en una sola consulta"""
+        egresados = Egreso.objects.filter(
+            alumno_id__in=alumnos,
+            periodo__gte=periodo_inicio,
+            periodo__lte=periodo_fin
+        ).count()
+
+        titulados = Titulacion.objects.filter(
+            alumno_id__in=alumnos,
+            periodo__gte=periodo_inicio,
+            periodo__lte=periodo_fin
+        ).count()
+
+        activos = Ingreso.objects.filter(
+            tipo='RE',
+            alumno_id__in=alumnos,
+            periodo=periodo_fin,
+            alumno__plan__carrera__pk=carrera
+        ).count()
+
+        return {
+            'egresados': egresados,
+            'titulados': titulados,
+            'activos': activos
+        }
+
+    def calculate_rates(self, data):
+        """Calcula tasas a partir de los datos"""
+        if data['poblacion_inicial'] == 0:
+            return {
+                'tasa_desercion': 0,
+                'tasa_egreso': 0,
+                'tasa_titulacion': 0,
+                'tasa_reprobacion': 0,
+                'desercion': 0,
+                'reprobacion': 0
+            }
+
+        desercion = max(0, data['poblacion_inicial'] - data['activos'] - data['egresados'])
+        reprobacion = data['poblacion_inicial'] - data['egresados'] - desercion
+
+        return {
+            'desercion': desercion,
+            'reprobacion': reprobacion,
+            'tasa_desercion': round(Decimal(desercion * 100) / data['poblacion_inicial'], 2),
+            'tasa_egreso': round(Decimal(data['egresados'] * 100) / data['poblacion_inicial'], 2),
+            'tasa_titulacion': round(Decimal(data['titulados'] * 100) / data['poblacion_inicial'], 2),
+            'tasa_reprobacion': round(Decimal(reprobacion * 100) / data['poblacion_inicial'], 2)
+        }
+
     def get(self, request, format=None):
-        nuevo_ingreso = request.GET.get('nuevo-ingreso')
-        traslado_equivalencia = request.GET.get('traslado-equivalencia')
-        cohorte = request.GET.get('cohorte') if request.GET.get('cohorte') else getPeriodoActual()
-        carrera = request.GET.get('carrera')
+        try:
+            # Obtener parámetros
+            tipos = []
+            if request.GET.get('nuevo-ingreso'):
+                tipos.extend(['EX', 'CO'])
+            if request.GET.get('traslado-equivalencia'):
+                tipos.extend(['TR', 'EQ'])
+            
+            cohorte = request.GET.get('cohorte', getPeriodoActual())
+            carrera = request.GET.get('carrera')
+            response_data = {}
+            periodo_inicial = cohorte
 
-        tipos = []
-        if nuevo_ingreso:
-            tipos.extend(['EX', 'CO'])
-        if traslado_equivalencia:
-            tipos.extend(['TR', 'EQ'])
+            # Procesar generaciones
+            for gen in range(3):
+                periodos = calcularPeriodos(periodo_inicial, 9)
+                periodo_final = periodos[8]
 
-        response_data = {}
-        periodoInicial = cohorte
-        for gen in range(3):
-            periodos = calcularPeriodos(periodoInicial, int(9))
-            poblacion_nuevo_ingreso = 0
-            alumnos = Ingreso.objects.filter(tipo__in=tipos, periodo=periodoInicial,alumno__plan__carrera__pk=carrera).annotate(clave=F("alumno_id")
-                ).values("clave")
-            alumnos_corte_anterior = 0
-            poblacion_egr = 0
-            poblacion_titulo = 0
-            desercion = 0
-            for periodo in periodos:
-                if periodo == periodos[0]:
-                    activos = Count("alumno__plan__carrera__pk", filter=Q(tipo__in=tipos, alumno__in=alumnos, periodo=periodoInicial,alumno__plan__carrera__pk=carrera))
-                    poblacion_act = Ingreso.objects.aggregate(poblacion=activos)
-                    poblacion_nuevo_ingreso = poblacion_act['poblacion']
-                    alumnos_corte_anterior = poblacion_act['poblacion']
-                else:
-                    activos = Count("alumno__plan__carrera__pk", filter=Q(tipo='RE', alumno__in=alumnos, periodo=periodo, alumno__plan__carrera__pk=carrera))
-                    poblacion_act = Ingreso.objects.aggregate(poblacion=activos)
-                inactivos = Count("alumno__plan__carrera__pk", filter=Q(alumno_id__in=alumnos, periodo=periodo))
-                poblacion_egr = poblacion_egr + Egreso.objects.aggregate(egresados=inactivos)['egresados']
-                poblacion_titulo = poblacion_titulo + Titulacion.objects.aggregate(titulados=inactivos)['titulados']
-                desercion = desercion + (alumnos_corte_anterior - poblacion_act['poblacion'] - poblacion_egr)
-                if desercion < 0:
-                    desercion = 0
-                alumnos_corte_anterior = poblacion_act['poblacion']
-            if poblacion_nuevo_ingreso == 0:
-                tasa_desercion = 0
-                tasa_egreso = 0
-                desercion = 0
-                reprobacion = 0
-                tasa_reprobacion = 0
-                tasa_titulo = 0
-            else :
-                tasa_desercion = Decimal((desercion*100)/poblacion_nuevo_ingreso)
-                tasa_desercion = round(tasa_desercion, 2)
-                tasa_egreso = Decimal((poblacion_egr*100)/poblacion_nuevo_ingreso)
-                tasa_egreso = round(tasa_egreso, 2)
-                tasa_titulo = Decimal((poblacion_titulo*100)/poblacion_nuevo_ingreso)
-                tasa_titulo = round(tasa_titulo, 2)
-                reprobacion = poblacion_nuevo_ingreso - poblacion_egr - desercion
-                tasa_reprobacion = Decimal((reprobacion*100)/poblacion_nuevo_ingreso)
-                tasa_reprobacion = round(tasa_reprobacion, 2)
-            generacion = "{inicio} - {fin}".format(inicio=periodos[0], fin=periodos[8])
-            response_data[generacion] = dict(poblacion=poblacion_nuevo_ingreso, desercion=desercion, tasa_desercion=tasa_desercion, reprobacion=reprobacion, tasa_reprobacion=tasa_reprobacion, egresados=poblacion_egr, titulados=poblacion_titulo, tasa_titulacion=tasa_titulo, tasa_egreso=tasa_egreso)
-            periodoInicial = periodos[1]
-        return Response(response_data)
+                # Obtener población inicial
+                pop_data = self.get_population_data(tipos, periodo_inicial, carrera)
+                
+                # Obtener datos de seguimiento
+                tracking_data = self.get_tracking_data(
+                    pop_data['alumnos'],
+                    periodo_inicial,
+                    periodo_final,
+                    carrera
+                )
+
+                # Calcular tasas
+                rates = self.calculate_rates({
+                    'poblacion_inicial': pop_data['poblacion'],
+                    'activos': tracking_data['activos'],
+                    'egresados': tracking_data['egresados'],
+                    'titulados': tracking_data['titulados']
+                })
+
+                # Guardar resultados
+                generacion = f"{periodos[0]} - {periodos[8]}"
+                response_data[generacion] = {
+                    'poblacion': pop_data['poblacion'],
+                    'desercion': rates['desercion'],
+                    'tasa_desercion': rates['tasa_desercion'],
+                    'reprobacion': rates['reprobacion'],
+                    'tasa_reprobacion': rates['tasa_reprobacion'],
+                    'egresados': tracking_data['egresados'],
+                    'titulados': tracking_data['titulados'],
+                    'tasa_titulacion': rates['tasa_titulacion'],
+                    'tasa_egreso': rates['tasa_egreso']
+                }
+
+                periodo_inicial = periodos[1]
+
+            return Response(response_data)
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
