@@ -29,6 +29,9 @@ class TablasPoblacion(APIView):
             cohorte = request.query_params.get('cohorte') if request.query_params.get('cohorte') else getPeriodoActual()
             semestres = request.query_params.get('semestres') if request.query_params.get('semestres') else '9'
 
+            # Asegurar formato correcto del cohorte (sin guión)
+            cohorte = cohorte.replace('-', '')
+
             tipos = []
             if nuevo_ingreso:
                 tipos.extend(['EX', 'CO'])
@@ -38,10 +41,30 @@ class TablasPoblacion(APIView):
             response_data = {}
             periodos = calcularPeriodos(cohorte, int(semestres))
             
-            # Asegurar formato correcto de periodos
-            periodos = [periodo.replace('-', '') for periodo in periodos]
+            # Log inicial de períodos
+            logger.info(f"""
+                Configuración:
+                Cohorte original: {cohorte}
+                Semestres: {semestres}
+                Períodos calculados: {periodos}
+                ------------------------
+            """)
+
+            # Asegurar formato correcto de todos los periodos
+            periodos = [p.replace('-', '') for p in periodos]
+            
+            # Log después de normalizar
+            logger.info(f"""
+                Períodos normalizados: {periodos}
+                ------------------------
+            """)
 
             for periodo in periodos:
+                logger.info(f"""
+                    Procesando período: {periodo}
+                    Tipos: {tipos}
+                    ------------------------
+                """)
                 # Consulta base que funcionaba anteriormente
                 poblacion_qs = Ingreso.objects.filter(
                     tipo__in=tipos, 
