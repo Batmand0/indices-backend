@@ -34,7 +34,7 @@ class TablasPoblacion(APIView):
 
             tipos = []
             if nuevo_ingreso:
-                tipos.extend(['EX', 'CO'])
+                tipos.extend(['EX'])
             if traslado_equivalencia:
                 tipos.extend(['TR', 'EQ'])
 
