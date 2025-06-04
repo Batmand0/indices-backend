@@ -25,12 +25,35 @@ class HistorialList(generics.ListAPIView):
     def get_queryset(self):
         queryset = Alumno.objects.all()
         tipos_ingresos = []
-        if self.request.query_params.get('nuevo-ingreso'):
-            tipos_ingresos.extend(['EX','CO'])
-        if self.request.query_params.get('traslado-equivalencia'):
-            tipos_ingresos.extend(['TR','EQ'])
+        
+        # Convertir explícitamente a booleano
+        nuevo_ingreso = self.request.query_params.get('nuevo-ingreso', '').lower() == 'true'
+        traslado_equivalencia = self.request.query_params.get('traslado-equivalencia', '').lower() == 'true'
+        
+        # Agregar logging para debug
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"""
+            Filtros solicitados:
+            nuevo_ingreso: {nuevo_ingreso}
+            traslado_equivalencia: {traslado_equivalencia}
+        """)
+        
+        # Aplicar filtros según los booleanos
+        if nuevo_ingreso:
+            tipos_ingresos.extend(['EX', 'CO'])
+        if traslado_equivalencia:
+            tipos_ingresos.extend(['TR', 'EQ'])
+            
+        # Si no hay tipos seleccionados, retornar queryset vacío
+        if not tipos_ingresos:
+            return Alumno.objects.none()
+            
         carrera_param = self.request.query_params.get('carrera')
         cohorte_param = self.request.query_params.get('cohorte')
+
+        # Log de tipos de ingreso a filtrar
+        logger.info(f"Tipos de ingreso a filtrar: {tipos_ingresos}")
 
         if carrera_param is not None:
             try:

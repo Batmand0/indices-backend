@@ -5,6 +5,7 @@ from rest_framework import permissions
 
 from registros.models import Ingreso
 from registros.periodos import calcularPeriodos, getPeriodoActual
+from carreras.models import Carrera  # Agregar esta importación al inicio
 
 import logging
 logger = logging.getLogger(__name__)
@@ -24,19 +25,36 @@ class TablasPoblacion(APIView):
 
     def get(self, request, format=None):
         try:
-            nuevo_ingreso = request.query_params.get('nuevo-ingreso')
-            traslado_equivalencia = request.query_params.get('traslado-equivalencia')
+            # Convertir explícitamente a booleano
+            nuevo_ingreso = request.query_params.get('nuevo-ingreso', '').lower() == 'true'
+            traslado_equivalencia = request.query_params.get('traslado-equivalencia', '').lower() == 'true'
             cohorte = request.query_params.get('cohorte') if request.query_params.get('cohorte') else getPeriodoActual()
             semestres = request.query_params.get('semestres') if request.query_params.get('semestres') else '9'
 
-            # Asegurar formato correcto del cohorte (sin guión)
+            # Asegurar formato correcto del cohorte
             cohorte = cohorte.replace('-', '')
 
+            # Aplicar filtros según los booleanos
             tipos = []
             if nuevo_ingreso:
-                tipos.extend(['EX', 'CO'])
+                tipos.extend(['EX'])
             if traslado_equivalencia:
                 tipos.extend(['TR', 'EQ'])
+
+            # Log de configuración
+            logger.info(f"""
+                Configuración:
+                Nuevo ingreso: {nuevo_ingreso}
+                Traslado/Equivalencia: {traslado_equivalencia}
+                Tipos seleccionados: {tipos}
+                Cohorte: {cohorte}
+                Semestres: {semestres}
+                ------------------------
+            """)
+
+            # Si no hay tipos seleccionados, retornar respuesta vacía
+            if not tipos:
+                return Response({})
 
             response_data = {}
             periodos = calcularPeriodos(cohorte, int(semestres))
@@ -60,12 +78,17 @@ class TablasPoblacion(APIView):
             """)
 
             for periodo in periodos:
-                logger.info(f"""
-                    Procesando período: {periodo}
-                    Tipos: {tipos}
-                    ------------------------
-                """)
-                # Consulta base que funcionaba anteriormente
+                logger.info(f"Procesando período: {periodo}")
+                
+                # Obtener todas las carreras primero
+                todas_carreras = Carrera.objects.values('pk', 'nombre')
+                carreras_dict = {carrera['pk']: {
+                    'clave': carrera['pk'],
+                    'nombre': carrera['nombre'],
+                    'poblacion': 0
+                } for carrera in todas_carreras}
+
+                # Obtener poblaciones existentes
                 poblacion_qs = Ingreso.objects.filter(
                     tipo__in=tipos, 
                     periodo=periodo
@@ -73,22 +96,34 @@ class TablasPoblacion(APIView):
                     clave=F("alumno__plan__carrera__pk"),
                     nombre=F("alumno__plan__carrera__nombre")
                 ).values("clave", "nombre").annotate(
-                    poblacion=Count("alumno__plan__carrera")
+                    poblacion=Count("alumno_id", distinct=True)
                 )
 
-                # Convertir QuerySet a lista antes de calcular el total
-                carreras_list = list(poblacion_qs)
+                # Actualizar el diccionario con las poblaciones existentes
+                for entry in poblacion_qs:
+                    if entry['clave'] in carreras_dict:
+                        carreras_dict[entry['clave']]['poblacion'] = entry['poblacion']
+
+                # Convertir el diccionario a lista
+                carreras_list = list(carreras_dict.values())
                 total = sum(entry['poblacion'] for entry in carreras_list)
 
-                # Estructurar respuesta
                 response_data[periodo] = {
                     "total": {"poblacion": total},
                     "carreras": carreras_list
                 }
 
-            return Response(response_data)
+                logger.info(f"""
+                    Resultados período {periodo}:
+                    Total carreras: {len(carreras_list)}
+                    Población total: {total}
+                    ------------------------
+                """)
 
+            return Response(response_data)
+            
         except Exception as e:
+            logger.error(f"Error en TablasPoblacion: {str(e)}")
             return Response({'error': str(e)}, status=500)
 
 class TablasCrecimiento(APIView):
@@ -105,16 +140,35 @@ class TablasCrecimiento(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, format=None):
-        nuevo_ingreso = request.query_params.get('nuevo-ingreso')
-        traslado_equivalencia = request.query_params.get('traslado-equivalencia')
+        # Convertir explícitamente a booleano
+        nuevo_ingreso = request.query_params.get('nuevo-ingreso', '').lower() == 'true'
+        traslado_equivalencia = request.query_params.get('traslado-equivalencia', '').lower() == 'true'
         cohorte = request.query_params.get('cohorte') if request.query_params.get('cohorte') else getPeriodoActual()
         semestres = request.query_params.get('semestres') if request.query_params.get('semestres') else '9'
         carrera = request.query_params.get('carrera') if request.query_params.get('carrera') else 'TODAS'
+
+        # Aplicar filtros según los booleanos
         tipos = []
         if nuevo_ingreso:
-            tipos.extend(['EX', 'CO'])
+            tipos.extend(['EX'])
         if traslado_equivalencia:
             tipos.extend(['TR', 'EQ'])
+
+        # Log de configuración
+        logger.info(f"""
+            Configuración TablasCrecimiento:
+            Nuevo ingreso: {nuevo_ingreso}
+            Traslado/Equivalencia: {traslado_equivalencia}
+            Tipos seleccionados: {tipos}
+            Cohorte: {cohorte}
+            Semestres: {semestres}
+            Carrera: {carrera}
+            ------------------------
+        """)
+
+        # Si no hay tipos seleccionados, retornar respuesta vacía
+        if not tipos:
+            return Response({})
 
         response_data = {}
         periodos = calcularPeriodos(cohorte, int(semestres))

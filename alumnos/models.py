@@ -4,10 +4,24 @@ import re
 
 class Alumno(models.Model):
     def validate_nocontrol(value):
-        match = re.match(r'^C?(0\d|[1-9]\d)(0[1-9]|[1-9]\d)(000[1-9]|00[1-9]\d|0[1-9]\d\d|[1-9]\d\d\d)$', value.upper())
-        if match is None:
+        # Patrón para licenciatura (normal y cambio de carrera)
+        patron_licenciatura = r'^C?(0\d|[1-9]\d)(0[1-9]|[1-9]\d)(000[1-9]|00[1-9]\d|0[1-9]\d\d|[1-9]\d\d\d)$'
+        # Patrón para maestría
+        patron_maestria = r'^M(0\d|[1-9]\d)(0[1-9]|[1-9]\d)(000[1-9]|00[1-9]\d|0[1-9]\d\d|[1-9]\d\d\d)$'
+        
+        valor = value.upper()
+        match_lic = re.match(patron_licenciatura, valor)
+        match_master = re.match(patron_maestria, valor)
+        
+        if match_lic is None and match_master is None:
             raise ValidationError(
-                'Numero de control invalido',
+                'Número de control inválido. Debe seguir el formato:\n'
+                '- Licenciatura: YYSSSNNNN o CYYSSSNNNN\n'
+                '- Maestría: MYYSSSNNNN\n'
+                'Donde:\n'
+                'YY = Año (2 dígitos)\n'
+                'SSS = Semestre (3 dígitos)\n'
+                'NNNN = Número consecutivo',
                 params={'value': value},
             )
 
