@@ -249,6 +249,94 @@ class IndicesBase(APIView, ABC):
             'alumnos': alumnos
         }
 
+    def get_base_data_global(self, tipos, cohorte, periodos):
+        """Obtiene datos base para todas las carreras combinadas"""
+        temp_data = {}
+        
+        # Obtener todos los alumnos del cohorte sin filtrar por carrera
+        alumnos = Ingreso.objects.filter(
+            tipo__in=tipos,
+            periodo=cohorte
+        ).annotate(
+            clave=F("alumno_id")
+        ).values("clave")
+
+        # Obtener población inicial total
+        poblacion_inicial = Ingreso.objects.filter(
+            tipo__in=tipos,
+            periodo=cohorte
+        ).aggregate(
+            poblacion=Count('alumno_id', distinct=True),
+            hombres=Count('alumno_id', distinct=True, 
+                         filter=Q(alumno__curp__genero='H')),
+            mujeres=Count('alumno_id', distinct=True, 
+                         filter=Q(alumno__curp__genero='M'))
+        )
+
+        alumnos_periodo_anterior = alumnos
+        periodo_anterior = cohorte
+
+        # Recolección de datos por periodo
+        for periodo in periodos:
+            if periodo == cohorte:
+                # Para el periodo inicial
+                poblacion_act = poblacion_inicial
+                alumnos_periodo = alumnos
+            else:
+                # Para periodos posteriores
+                poblacion_act = Ingreso.objects.filter(
+                    tipo='RE',
+                    periodo=periodo,
+                    alumno_id__in=alumnos.values('clave')
+                ).aggregate(
+                    poblacion=Count('alumno_id', distinct=True),
+                    hombres=Count('alumno_id', distinct=True, 
+                                 filter=Q(alumno__curp__genero='H')),
+                    mujeres=Count('alumno_id', distinct=True, 
+                                 filter=Q(alumno__curp__genero='M'))
+                )
+                alumnos_periodo = Ingreso.objects.filter(
+                    tipo='RE',
+                    periodo=periodo,
+                    alumno_id__in=alumnos.values('clave')
+                ).values('clave')
+
+            # Obtener datos de inactivos globales
+            poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
+            
+            # Calcular deserción global
+            egresados_periodo = Egreso.objects.filter(
+                periodo=periodo_anterior,
+                alumno_id__in=alumnos
+            ).values('clave')
+
+            desercion = calcularDesercion(
+                alumnos_periodo_anterior,
+                alumnos_periodo,
+                egresados_periodo
+            )
+
+            # Guardar datos en temp_data
+            temp_data[periodo] = {
+                'hombres': poblacion_act['hombres'],
+                'mujeres': poblacion_act['mujeres'],
+                'hombres_egresados': poblacion_inactiva['egreso']['hombres'],
+                'mujeres_egresadas': poblacion_inactiva['egreso']['mujeres'],
+                'hombres_titulados': poblacion_inactiva['titulacion']['hombres'],
+                'mujeres_tituladas': poblacion_inactiva['titulacion']['mujeres'],
+                'hombres_desertores': desercion['hombres'],
+                'mujeres_desertoras': desercion['mujeres']
+            }
+
+            alumnos_periodo_anterior = alumnos_periodo
+            periodo_anterior = periodo
+
+        return {
+            'temp_data': temp_data,
+            'poblacion_nuevo_ingreso': poblacion_inicial['poblacion'],
+            'alumnos': alumnos
+        }
+
     @abstractmethod
     def process_response(self, base_data, periodos):
         """Cada subclase implementa su procesamiento específico"""
@@ -283,10 +371,13 @@ class IndicesPermanencia(IndicesBase):
             tipos = calcularTipos(params['nuevo_ingreso'], params['traslado_equivalencia'])
             periodos = calcularPeriodos(params['cohorte'], int(params['semestres']) + 1)
             
-            # Obtener datos base
-            base_data = self.get_base_data(tipos, params['cohorte'], periodos, params['carrera'])
+            # Determinar si es consulta global o por carrera
+            if params['carrera'] == 'TODAS':
+                base_data = self.get_base_data_global(tipos, params['cohorte'], periodos)
+            else:
+                base_data = self.get_base_data(tipos, params['cohorte'], periodos, params['carrera'])
             
-            # Procesar respuesta
+            # Obtener datos base
             response_data = self.process_response(base_data, periodos)
             
             return Response(response_data)
@@ -482,7 +573,7 @@ class IndicesDesercion(IndicesBase):
                 desertores = (temp_data[periodo_siguiente]['hombres_desertores'] + 
                             temp_data[periodo_siguiente]['mujeres_desertoras'])
                 
-                # Actualizar deserción acumulada
+                # Actualizar desercion acumulada
                 desercion_acumulada += desertores
                 
                 # Calcular tasa de deserción
@@ -663,48 +754,35 @@ class IndicesGeneracionalPermanencia(IndicesGeneracionalBase):
         }
 
 class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
-    """
-    Vista para listar los índices de egreso por generación.
-
-    * Requiere autenticación por token.
-    """
     def process_generation(self, tipos, generacion, carrera, periodos):
         """Procesa datos de egreso para una generación"""
         alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
-        alumnos_periodo_anterior = alumnos
-        periodo_anterior = generacion
-        ultimo_periodo = periodos[-1]
+        total_egresados = 0
 
-        for periodo in periodos:
-            if periodo == generacion:
-                alumnos_periodo = Ingreso.objects.filter(
-                    tipo__in=tipos,
-                    periodo=periodo,
-                    alumno_id__in=alumnos,
-                    alumno__plan__carrera__pk=carrera
-                ).annotate(
-                    clave=F("alumno_id")
-                ).values("clave")
-            else:
-                alumnos_periodo = Ingreso.objects.filter(
-                    tipo='RE',
-                    periodo=periodo,
-                    alumno_id__in=alumnos,
-                    alumno__plan__carrera__pk=carrera
-                ).annotate(
-                    clave=F("alumno_id")
-                ).values("clave")
+        # Procesar cada periodo igual que IndicesEgreso
+        for periodo in periodos[:-1]:
+            # Obtener población inactiva del periodo
+            poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
+            
+            # Sumar egresados del periodo
+            egresados_periodo = poblacion_inactiva['egreso']['egresados']
+            total_egresados += egresados_periodo
 
-            alumnos_periodo_anterior = alumnos_periodo
-            periodo_anterior = periodo
-
-        poblacion_egresada = obtenerPoblacionEgreso(alumnos, ultimo_periodo)
-        total_egresados = poblacion_egresada['total']
+        # Calcular tasa final
         tasa_egreso = calcularTasa(total_egresados, total_inicial)
+
+        logger.info(f"""
+            Cálculo de egreso generacional:
+            Generación: {generacion}
+            Total inicial: {total_inicial}
+            Total egresados acumulados: {total_egresados}
+            Tasa de egreso: {tasa_egreso}
+            ------------------------
+        """)
 
         return {
             'total_inicial': total_inicial,
-            'total_egresados': total_egresados,
+            'total_actual': total_egresados,
             'tasa_egreso': tasa_egreso
         }
 

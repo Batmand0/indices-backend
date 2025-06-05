@@ -1,3 +1,4 @@
+from django.forms import ValidationError
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from backend.permissions import IsAdminUserOrReadOnly
 
@@ -409,60 +410,108 @@ class EgresoUpload(views.APIView):
     parser_classes = [FileUploadParser]
     permission_classes = [IsAuthenticated&IsAdminUser]
 
+    def validate_period(self, period):
+        """Valida el formato del periodo"""
+        try:
+            # Convertir float a string y quitar .0
+            if isinstance(period, float):
+                period = str(period).rstrip('0').rstrip('.')
+            else:
+                period = str(period).strip()
+            
+            logger.info(f"""
+                Validando periodo:
+                Valor original: {period}
+                Tipo original: {type(period)}
+            """)
+
+            if not re.match(r'^[12][0-9]{3}[13]$', period):
+                raise ValidationError(f'Formato de periodo inválido: {period}')
+            return period
+        except Exception as e:
+            logger.error(f"Error validando periodo: {period}, error: {str(e)}")
+            raise
+
     def to_dict(self, row):
-        # regresa None si el renglon son solo celdas vacias
-        for cell in row:
-            if cell.value is not None:
-                break
+        """Valida y convierte una fila a diccionario"""
+        # Validar fila vacía
+        if all(cell.value is None for cell in row):
             return None
 
         if row[0].value is None:
             raise Exception('Se necesita un no. de control')
 
-        data = {
+        return {
             'no_control': str(row[0].value).strip(),
         }
-        return data
-
     def post(self, request, filename, format=None):
-        ESTRUCTURA = [(r'^no_control$', 'NO_CONTROL'), (r'^[12][0-9]{3}[13]$', 'PERIODO')]
-        # Obtiene el archivo enviado en la solicitud HTTP
-        file_obj = request.data['file']
+        try:
+            file_obj = request.data['file']
+            results = {"errors": [], "created": 0}
+            
+            # Agregar logging
+            logger.info(f"Procesando archivo de egreso: {filename}")
 
-        # Carga el archivo Excel en un objeto Workbook de openpyxl, 
-        # con data_only=True para obtener los valores calculados en lugar de las fórmulas
-        wb = openpyxl.load_workbook(file_obj, data_only=True)
+            wb = openpyxl.load_workbook(file_obj, data_only=True)
+            ws = wb.active
+            
+            # Validar encabezados
+            header_row = ws['A1':'B1'][0]
+            periodo_raw = header_row[1].value
 
-        # Selecciona la hoja activa del archivo Excel
-        ws = wb.active
+            logger.info(f"Periodo raw: {periodo_raw}, tipo: {type(periodo_raw)}")
 
-        results = {"errors": [], "created": 0}
-        header_row = ws['A1':'B1'][0] # ws['A1':'B1'] regresa una tupla de renglones, pero solo necesitamos la primera
+            # Validar formato del periodo
+            periodo = self.validate_period(periodo_raw)
+            
+            logger.info(f"Periodo detectado: {periodo}")
 
-        # VALIDAR ESTRUCTURA DEL ARCHIVO COMO:
-        # no_control | periodo
-        for i, expresion in enumerate(ESTRUCTURA):
-            match = re.match(expresion[0], str(header_row[i].value).lower())
-            if match is None:
-                return Response(status=400, data={'message': f'Se esperaba el campo {expresion[i]} pero se obtuvo {header_row[i].value}'})
+            # Procesar filas
+            for row in ws.iter_rows(min_row=2):
+                try:
+                    data = self.to_dict(row)
+                    if data is None:
+                        continue
 
-        for row in ws.iter_rows(min_row=2):
-            try:
-                data = self.to_dict(row)
-                if data is None:
-                    continue
-                # Buscar el alumno con el número de control proporcionado en los datos
-                alumno = Alumno.objects.get(pk=(data['no_control']))
-                # Se crea un registro de egreso con el alumno y el periodo proporcionados
-                egresado = Egreso.objects.create(periodo=str(header_row[1].value), alumno=alumno)
-                egresado.save()
-                results['created'] += 1
-            except Alumno.DoesNotExist as ex:
-                results['errors'].append({'type': str(type(ex)), 'message': f'No se encontro un alumno con no. de control {data["no_control"]}', 'row_index': row[0].row})
-            except Exception as ex:
-                results['errors'].append({'type': str(type(ex)), 'message': str(ex), 'row_index': row[0].row})
-        return Response(status=200, data=results)
+                    # Buscar alumno
+                    try:
+                        alumno = Alumno.objects.get(pk=data['no_control'])
+                        
+                        # Crear registro de egreso
+                        egresado = Egreso.objects.create(
+                            periodo=periodo,
+                            alumno=alumno
+                        )
+                        results['created'] += 1
+                        
+                        logger.info(f"Egreso creado: {alumno.no_control} - {periodo}")
 
+                    except Alumno.DoesNotExist:
+                        error_msg = f'No se encontró alumno con no. control {data["no_control"]}'
+                        logger.warning(error_msg)
+                        results['errors'].append({
+                            'type': 'Alumno.DoesNotExist',
+                            'message': error_msg,
+                            'row_index': row[0].row
+                        })
+
+                except Exception as ex:
+                    logger.error(f"Error procesando fila {row[0].row}: {str(ex)}")
+                    results['errors'].append({
+                        'type': str(type(ex)),
+                        'message': str(ex),
+                        'row_index': row[0].row
+                    })
+
+            logger.info(f"Proceso completado. Creados: {results['created']}, Errores: {len(results['errors'])}")
+            return Response(status=200, data=results)
+
+        except Exception as e:
+            logger.error(f"Error general: {str(e)}")
+            return Response(
+                status=400, 
+                data={'message': f'Error procesando archivo: {str(e)}'}
+            )
 ### TITULACION
 class TitulacionList(generics.ListCreateAPIView):
     queryset = Titulacion.objects.all()
@@ -479,61 +528,109 @@ class TitulacionUpload(views.APIView):
     parser_classes = [FileUploadParser]
     permission_classes = [IsAuthenticated&IsAdminUser]
 
+    def validate_period(self, period):
+        """Valida el formato del periodo"""
+        try:
+            # Convertir float a string y quitar .0
+            if isinstance(period, float):
+                period = str(period).rstrip('0').rstrip('.')
+            else:
+                period = str(period).strip()
+            
+            logger.info(f"""
+                Validando periodo:
+                Valor original: {period}
+                Tipo original: {type(period)}
+            """)
+
+            if not re.match(r'^[12][0-9]{3}[13]$', period):
+                raise ValidationError(f'Formato de periodo inválido: {period}')
+            return period
+        except Exception as e:
+            logger.error(f"Error validando periodo: {period}, error: {str(e)}")
+            raise
+
     def to_dict(self, row):
-        # regresa None si el renglon son solo celdas vacias
-        for cell in row:
-            if cell.value is not None:
-                break
+        """Valida y convierte una fila a diccionario"""
+        # Validar fila vacía
+        if all(cell.value is None for cell in row):
             return None
 
         if row[0].value is None:
             raise Exception('Se necesita un no. de control')
+            
         if row[1].value is None:
             raise Exception('Se necesita el tipo de titulación')
+        
+        logger.info(f"""
+            no_control: {row[0].value},
+            tipo_titulacion: {row[1].value}
+        """)
 
-        data = {
+        return {
             'no_control': str(row[0].value).strip(),
-            'tipo_titulacion': str(row[1].value).strip()[0:2],
+            'tipo_titulacion': str(row[1].value).strip()  # Agregar tipo_titulacion
         }
-        return data
 
     def post(self, request, filename, format=None):
         ESTRUCTURA = [(r'^no_control$', 'NO_CONTROL'), (r'^[12][0-9]{3}[13]$', 'NUMERO DE PERIODO')]
-        # Obtiene el archivo enviado en la solicitud HTTP
         file_obj = request.data['file']
-
-        # Carga el archivo Excel en un objeto Workbook de openpyxl, 
-        # con data_only=True para obtener los valores calculados en lugar de las fórmulas
+        results = {"errors": [], "created": 0}  # Mover esta línea al inicio
+        
+        logger.info(f"Procesando archivo de titulación: {filename}")
+        
         wb = openpyxl.load_workbook(file_obj, data_only=True)
-
-        # Selecciona la hoja activa del archivo Excel
         ws = wb.active
 
-        results = {"errors": [], "created": 0}
-        header_row = ws['A1':'B1'][0] # ws['A1':'B1'] regresa una tupla de renglones, pero solo necesitamos la primera
+        # Validar encabezados
+        header_row = ws['A1':'B1'][0]
+        periodo_raw = header_row[1].value
 
-        # VALIDAR ESTRUCTURA DEL ARCHIVO COMO:
-        # no_control | periodo
-        for i, expresion in enumerate(ESTRUCTURA):
-            match = re.match(expresion[0], str(header_row[i].value).lower())
-            if match is None:
-                return Response(status=400, data={'message': f'Se esperaba el campo {expresion[i]} pero se obtuvo {header_row[i].value}'})
+        # Validar formato del periodo
+        periodo = self.validate_period(periodo_raw)
 
-        for row in ws.iter_rows(min_row=2):
-            try:
-                data = self.to_dict(row)
-                if data is None:
-                    continue
-                alumno = Alumno.objects.get(pk=data['no_control'])
-                titulacion, created = Titulacion.objects.get_or_create(periodo=str(header_row[1].value), tipo=data['tipo_titulacion'], alumno=alumno)
-                if created:
-                    results['created'] += 1
-            except Alumno.DoesNotExist as ex:
-                results['errors'].append({'type': str(type(ex)), 'message': f'No se encontro un alumno con no. de control {data["no_control"]}', 'row_index': row[0].row})
-            except Exception as ex:
-                results['errors'].append({'type': str(type(ex)), 'message': str(ex), 'row_index': row[0].row})
-        return Response(status=200, data=results)
+        logger.info(f"Encabezados detectados: {header_row[0].value} y {periodo}")
+        
+        try:
+            for row in ws.iter_rows(min_row=2):
+                try:
+                    data = self.to_dict(row)
+                    if data is None:
+                        continue
+                    
+                    alumno = Alumno.objects.get(pk=data['no_control'])
+                    titulacion, created = Titulacion.objects.get_or_create(
+                        periodo=periodo,  # Usar el periodo validado
+                        tipo=data['tipo_titulacion'], 
+                        alumno=alumno
+                    )
+                    if created:
+                        results['created'] += 1
+                        logger.info(f"Titulación creada: {alumno.no_control} - {periodo}")
 
+                except Alumno.DoesNotExist as ex:
+                    results['errors'].append({
+                        'type': str(type(ex)), 
+                        'message': f'No se encontró un alumno con no. de control {data["no_control"]}', 
+                        'row_index': row[0].row
+                    })
+                except Exception as ex:
+                    logger.error(f"Error procesando fila {row[0].row}: {str(ex)}")
+                    results['errors'].append({
+                        'type': str(type(ex)), 
+                        'message': str(ex), 
+                        'row_index': row[0].row
+                    })
+                    
+            logger.info(f"Proceso completado. Creados: {results['created']}, Errores: {len(results['errors'])}")
+            return Response(status=200, data=results)
+
+        except Exception as e:
+            logger.error(f"Error general: {str(e)}")
+            return Response(
+                status=400, 
+                data={'message': f'Error procesando archivo: {str(e)}'}
+            )
 ### LIBERACION DE INGLES
 class LiberacionInglesList(generics.ListCreateAPIView):
     queryset = LiberacionIngles.objects.all()

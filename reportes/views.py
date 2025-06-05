@@ -12,7 +12,7 @@ from carreras.models import Carrera
 from registros.periodos import calcularPeriodos, getPeriodoActual
 
 from decimal import Decimal
-from indices.views import obtenerPoblacionEgreso, obtenerPoblacionTitulada, obtenerPoblacionActiva, calcularTasa, calcularTipos
+from indices.views import obtenerPoblacionEgreso, obtenerPoblacionInactiva, obtenerPoblacionTitulada, obtenerPoblacionActiva, calcularTasa, calcularTipos
 import logging  
 
 # Configurar el logger
@@ -68,15 +68,14 @@ def obtenerPoblacionNuevoIngresoCarrera(tipos, cohorte, carrera_pk):
     )
 
 def obtenerPoblacionEgresoMultiple(tipos, cohorte, periodos, carrera_pk):
-    """Obtiene población de egreso para múltiples periodos"""
-    # Primero obtenemos los alumnos de nuevo ingreso
+    """Obtiene población de egreso acumulada para los periodos"""
     alumnos = Ingreso.objects.filter(
         tipo__in=tipos,
         periodo=cohorte,
         alumno__plan__carrera__pk=carrera_pk
     ).values_list('alumno_id', flat=True)
 
-    # Luego obtenemos los egresos de esos alumnos
+    # Obtener egresos acumulados
     return Egreso.objects.filter(
         alumno_id__in=alumnos,
         periodo__in=periodos
@@ -86,7 +85,7 @@ def obtenerPoblacionEgresoMultiple(tipos, cohorte, periodos, carrera_pk):
         hombres=Count('pk', filter=Q(alumno__curp__genero='H')),
         mujeres=Count('pk', filter=Q(alumno__curp__genero='M')),
         total=Count('pk')
-    )
+    ).order_by('periodo')  # Ordenar por periodo para acumulación correcta
 
 class ReportesBase(APIView):
     """Clase base para todos los reportes"""
@@ -158,72 +157,79 @@ class ReportesNuevoIngreso(ReportesBase):
 class ReportesEgreso(ReportesBase):
     def process_response(self, data):
         response_data = {}
+        semestres = int(data['semestres'])
         
         for carrera in data['carreras']:
-            # Obtener nuevo ingreso del cohorte
+            # Obtener nuevo ingreso y alumnos del cohorte
+            alumnos = Ingreso.objects.filter(
+                tipo__in=data['tipos'],
+                periodo=data['cohorte'],
+                alumno__plan__carrera__pk=carrera['clave']
+            ).values('alumno_id')
+
             poblacion_inicial = obtenerPoblacionNuevoIngresoCarrera(
                 data['tipos'], 
                 data['cohorte'], 
                 carrera['clave']
             )
 
-            # Calcular periodos de egreso
-            periodos_egreso = []
-            semestres = int(data['semestres'])
-            if semestres >= 8:
-                periodos_egreso = data['periodos'][8:min(12, semestres)]
-                if semestres > 12:
-                    periodos_egreso.extend(data['periodos'][12:semestres])
-
-            # Obtener datos de egreso
-            egreso_data = obtenerPoblacionEgresoMultiple(
-                data['tipos'],
-                data['cohorte'],
-                periodos_egreso,
-                carrera['clave']
-            )
-
             registros__semestres = {}
+            egreso_acumulado = {'total': 0, 'hombres': 0, 'mujeres': 0}
             
-            # Procesar primeros 12 semestres
-            egreso_total = {'total': 0, 'hombres': 0, 'mujeres': 0}
-            for sem in range(8, min(semestres, 12)):
-                datos_periodo = next(
-                    (item for item in egreso_data 
-                     if item['periodo'] == data['periodos'][sem]),
-                    {'hombres': 0, 'mujeres': 0, 'total': 0}
-                )
+            # Un solo bucle para procesar todos los periodos
+            for sem in range(7, min(semestres, 12)):
+                periodo = data['periodos'][sem]
+                poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
                 
-                egreso_total['total'] += datos_periodo['total']
-                egreso_total['hombres'] += datos_periodo['hombres']
-                egreso_total['mujeres'] += datos_periodo['mujeres']
-                
-                registros__semestres[sem + 1] = {
-                    'hombres': datos_periodo['hombres'],
-                    'mujeres': datos_periodo['mujeres']
-                }
+                # Acumular egresados
+                egreso_acumulado['total'] += poblacion_inactiva['egreso']['egresados']
+                egreso_acumulado['hombres'] += poblacion_inactiva['egreso']['hombres']
+                egreso_acumulado['mujeres'] += poblacion_inactiva['egreso']['mujeres']
 
-            registros__semestres['total_1'] = {'valor': egreso_total['total']}
-            tasa_egreso = calcularTasa(egreso_total['total'], poblacion_inicial['poblacion'])
+                # Guardar en registros solo si es semestre 8 o mayor
+                if sem >= 8:
+                    registros__semestres[sem + 1] = {
+                        'hombres': poblacion_inactiva['egreso']['hombres'],
+                        'mujeres': poblacion_inactiva['egreso']['mujeres']
+                    }
+
+            # Calcular tasa con el acumulado total (7-12)
+            registros__semestres['total_1'] = {'valor': egreso_acumulado['total']}
+            tasa_egreso = calcularTasa(egreso_acumulado['total'], poblacion_inicial['poblacion'])
             registros__semestres['tasa_egreso_1'] = {'valor': f"{tasa_egreso} %"}
+            
+            # Agregar logging para verificar
+            logger.info(f"""
+                Egresados acumulados para carrera {carrera['nombre']}:
+                Periodo inicial: {data['cohorte']}
+                Total acumulado: {egreso_acumulado['total']}
+                Hombres acumulados: {egreso_acumulado['hombres']}
+                Mujeres acumuladas: {egreso_acumulado['mujeres']}
+                ------------------------
+            """)
 
             if semestres > 12:
                 egreso_total_2 = {'total': 0, 'hombres': 0, 'mujeres': 0}
-                for i in range(12, semestres):
-                    datos_periodo = next(
-                        (item for item in egreso_data 
-                         if item['periodo'] == data['periodos'][i]),
-                        {'hombres': 0, 'mujeres': 0, 'total': 0}
-                    )
-                    egreso_total_2['total'] += datos_periodo['total']
-                    egreso_total_2['hombres'] += datos_periodo['hombres']
-                    egreso_total_2['mujeres'] += datos_periodo['mujeres']
+                for i in range(12, semestres):  # Cambiar 11 por 12
+                    periodo = data['periodos'][i]
+                    poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
+                    
+                    # Sumar egresados del periodo
+                    egreso_total_2['total'] += poblacion_inactiva['egreso']['egresados']
+                    egreso_total_2['hombres'] += poblacion_inactiva['egreso']['hombres']
+                    egreso_total_2['mujeres'] += poblacion_inactiva['egreso']['mujeres']
 
+                # Guardar datos acumulados después del semestre 12
                 registros__semestres[13] = {
                     'hombres': egreso_total_2['hombres'],
                     'mujeres': egreso_total_2['mujeres']
                 }
-                tasa_egreso_2 = calcularTasa(egreso_total_2['total'], poblacion_inicial['poblacion'])
+                
+                # Calcular tasa total acumulada (primeros 12 + posteriores)
+                tasa_egreso_2 = calcularTasa(
+                    egreso_acumulado['total'] + egreso_total_2['total'], 
+                    poblacion_inicial['poblacion']
+                )
                 registros__semestres['tasa_egreso_2'] = {'valor': f"{tasa_egreso_2} %"}
 
             response_data[carrera['nombre']] = {
