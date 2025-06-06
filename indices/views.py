@@ -597,12 +597,15 @@ class IndicesGeneracionalBase(APIView):
         semestre_actual = cohorte_actual % 10
         generaciones = []
         
-        for i in range(num_generaciones):
+        for i in range(9):
             año = año_base + (i // 2)
             semestre = 1 if i % 2 == 0 else 3
             generacion = str(año * 10 + semestre)
             generaciones.append(generacion)
         
+        # Generaciones a analizar
+        logger.info(f"Generaciones obtenidas: {generaciones}")
+
         return generaciones
 
     def get_base_data(self, tipos, generacion, carrera, periodos):
@@ -614,6 +617,7 @@ class IndicesGeneracionalBase(APIView):
         ).annotate(
             clave=F("alumno_id")
         ).values("clave")
+
 
         poblacion_inicial = obtenerPoblacionActiva(tipos, alumnos, generacion, carrera)
         return alumnos, poblacion_inicial['poblacion']
@@ -637,7 +641,7 @@ class IndicesGeneracionalBase(APIView):
             generaciones = self.get_generaciones(cohorte, num_semestres)
 
             for gen in generaciones:
-                periodos = calcularPeriodos(gen, 10)
+                periodos = calcularPeriodos(gen, num_semestres + 1)
                 response_data[gen] = self.process_generation(tipos, gen, carrera, periodos)
 
             return Response(response_data)
@@ -784,6 +788,38 @@ class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
             'total_inicial': total_inicial,
             'total_actual': total_egresados,
             'tasa_egreso': tasa_egreso
+        }
+class IndicesGeneracionalTitulacion(IndicesGeneracionalBase):
+    def process_generation(self, tipos, generacion, carrera, periodos):
+        """Procesa datos de egreso para una generación"""
+        alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
+        total_titulados = 0
+
+        # Procesar cada periodo igual que IndicesEgreso
+        for periodo in periodos:
+            # Obtener población inactiva del periodo
+            poblacion_inactiva = obtenerPoblacionInactiva(alumnos, periodo)
+            
+            # Sumar egresados del periodo
+            titulados_periodo = poblacion_inactiva['titulacion']['titulados']
+            total_titulados += titulados_periodo
+
+        # Calcular tasa final
+        tasa_titulacion = calcularTasa(total_titulados, total_inicial)
+
+        logger.info(f"""
+            Cálculo de titulacion generacional:
+            Generación: {generacion}
+            Total inicial: {total_inicial}
+            Total titulados acumulados: {total_titulados}
+            Tasa de titulacion: {tasa_titulacion}
+            ------------------------
+        """)
+
+        return {
+            'total_inicial': total_inicial,
+            'total_actual': total_titulados,
+            'tasa_titulacion': tasa_titulacion
         }
 
 # Función para calcular los desertores
