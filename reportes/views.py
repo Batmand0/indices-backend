@@ -277,17 +277,59 @@ class ReportesTitulacion(ReportesBase):
             tasa_titulados = calcularTasa(titulados_total['total'], poblacion_inicial['poblacion'])
             registros__semestres['tasa_titulacion_1'] = {'valor': f"{tasa_titulados} %"}
 
+            # Obtener egresados acumulados hasta el semestre actual
+            egresados_total = crearTotales()
+            for i in range(8, int(data['semestres'])):
+                egresados_periodo = obtenerPoblacionInactiva(alumnos, data['periodos'][i])
+                egresados_total['total'] += egresados_periodo['egreso']['egresados']
+
+            # Calcular índice de titulación para el primer bloque (hasta sem 12)
+            indice_titulacion = calcularTasa(
+                titulados_total['total'], 
+                egresados_total['total'] if egresados_total['total'] > 0 else 1
+            )
+            registros__semestres['indice_titulacion_1'] = {'valor': f"{indice_titulacion} %"}
+
             if int(data['semestres']) > 12:
                 titulados_total_2 = crearTotales()
-                for i in range(12, int(data['semestres'])):
+                titulados_semestre_actual = crearTotales()
+                
+                # Calcular acumulado desde semestre 8 hasta el actual para la tasa
+                for i in range(8, int(data['semestres'])):
                     titulados_periodo = obtenerPoblacionTitulada(alumnos, data['periodos'][i])
                     titulados_total_2 = actualizarTotales(titulados_total_2, titulados_periodo)
+                    
+                    # Guardar solo los titulados del último semestre seleccionado
+                    if i == int(data['semestres']) - 1:
+                        titulados_semestre_actual = titulados_periodo
+
+                # Mostrar solo los titulados del último semestre en el registro 13
                 registros__semestres[13] = {
-                    'hombres': titulados_total_2['hombres'],
-                    'mujeres': titulados_total_2['mujeres']
+                    'hombres': titulados_semestre_actual['hombres'],
+                    'mujeres': titulados_semestre_actual['mujeres']
                 }
+                
+                # Calcular tasa con el acumulado total desde semestre 8
                 tasa_titulados_2 = calcularTasa(titulados_total_2['total'], poblacion_inicial['poblacion'])
                 registros__semestres['tasa_titulacion_2'] = {'valor': f"{tasa_titulados_2} %"}
+
+                # Calcular índice de titulación para todos los semestres
+                indice_titulacion_2 = calcularTasa(
+                    titulados_total_2['total'],
+                    egresados_total['total'] if egresados_total['total'] > 0 else 1
+                )
+                registros__semestres['indice_titulacion_2'] = {'valor': f"{indice_titulacion_2} %"}
+
+                logger.info(f"""
+                    Cálculos para semestre {data['semestres']} de carrera {carrera['nombre']}:
+                    Total titulados: {titulados_total_2['total']}
+                    Total egresados: {egresados_total['total']}
+                    eficiencia de titulados a 12 semestres: {tasa_titulados} %
+                    índice de titulación a 12 semestres: {indice_titulacion}%
+                    eficiencia titulados: {tasa_titulados_2} %
+                    Índice titulación: {indice_titulacion_2}%
+                    ------------------------
+                """)
 
             response_data[carrera['nombre']] = {
                 'carrera': carrera['nombre'],
