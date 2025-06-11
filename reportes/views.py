@@ -279,7 +279,7 @@ class ReportesTitulacion(ReportesBase):
 
             # Obtener egresados acumulados hasta el semestre actual
             egresados_total = crearTotales()
-            for i in range(8, int(data['semestres'])):
+            for i in range(6, int(data['semestres'])):
                 egresados_periodo = obtenerPoblacionInactiva(alumnos, data['periodos'][i])
                 egresados_total['total'] += egresados_periodo['egreso']['egresados']
 
