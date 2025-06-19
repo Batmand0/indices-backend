@@ -1,5 +1,5 @@
 [{"model": "carreras.carrera", 
-    "pk": "ISYC", "fields": {"nombre": "INGENIERIA EN SISTEMAS COMPUTACIONALES"}}, 
+    "pk": "ISIC", "fields": {"nombre": "INGENIERIA EN SISTEMAS COMPUTACIONALES"}}, 
 {"model": "carreras.carrera", 
     "pk": "IQUI", "fields": {"nombre": "INGENIERIA QUIMICA"}}, 
 {"model": "carreras.carrera", 
