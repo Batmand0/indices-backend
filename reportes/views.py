@@ -10,6 +10,7 @@ from registros.models import Ingreso, Egreso, Titulacion
 from planes.models import Plan
 from carreras.models import Carrera
 from registros.periodos import calcularPeriodos, getPeriodoActual
+from guardian.shortcuts import get_objects_for_user
 
 from decimal import Decimal
 from indices.views import obtenerPoblacionEgreso, obtenerPoblacionInactiva, obtenerPoblacionTitulada, obtenerPoblacionActiva, calcularTasa, calcularTipos
@@ -23,6 +24,9 @@ logging.basicConfig(
         logging.StreamHandler()  # Enviar los mensajes de log a la consola
     ]
 )
+
+def get_carreras_permitidas(user):
+    return get_objects_for_user(user, 'ver_carrera', klass=Carrera)
 
 # Configurar el logger
 logger = logging.getLogger(__name__)
@@ -100,12 +104,19 @@ class ReportesBase(APIView):
             'semestres': request.query_params.get('semestres') if request.query_params.get('semestres') else '9'
         }
 
-    def get_base_data(self, params):
+    def get_base_data(self, request, params):
         """Obtiene datos base comunes para todos los reportes"""
+        carreras_permitidas = get_carreras_permitidas(request.user)
+        todas_carreras = Carrera.objects.filter(pk__in=[c.pk for c in carreras_permitidas]).values('pk', 'nombre')
+        carreras_dict = {carrera['pk']: {
+            'clave': carrera['pk'],
+            'nombre': carrera['nombre']
+        } for carrera in todas_carreras}
+
         return {
             'tipos': calcularTipos(params['nuevo_ingreso'], params['traslado_equivalencia']),
             'periodos': calcularPeriodos(params['cohorte'], int(params['semestres'])),
-            'carreras': Carrera.objects.values('clave', 'nombre'),
+            'carreras': carreras_dict,
             'cohorte': params['cohorte'],  # Agregar cohorte
             'semestres': params['semestres']  # Agregar semestres
         }
@@ -118,7 +129,7 @@ class ReportesBase(APIView):
         """Método GET común para todos los reportes"""
         try:
             params = self.get_base_params(request)
-            base_data = self.get_base_data(params)
+            base_data = self.get_base_data(request, params)
             response_data = self.process_response(base_data)
             return Response(response_data)
         except Exception as e:
@@ -131,10 +142,10 @@ class ReportesNuevoIngreso(ReportesBase):
         poblacion_data = obtenerPoblacionNuevoIngreso(
             data['tipos'], 
             data['periodos'],
-            [plan['clave'] for plan in data['carreras']]
+            [plan['clave'] for plan in data['carreras'].values()]
         )
 
-        for plan in data['carreras']:
+        for plan in data['carreras'].values():
             plan_regs = {}
             for periodo in data['periodos']:
                 datos = next(
@@ -159,7 +170,7 @@ class ReportesEgreso(ReportesBase):
         response_data = {}
         semestres = int(data['semestres'])
         
-        for carrera in data['carreras']:
+        for carrera in data['carreras'].values():
             # Obtener nuevo ingreso y alumnos del cohorte
             alumnos = Ingreso.objects.filter(
                 tipo__in=data['tipos'],
@@ -248,7 +259,7 @@ class ReportesTitulacion(ReportesBase):
     def process_response(self, data):
         response_data = {}
         
-        for carrera in data['carreras']:
+        for carrera in data['carreras'].values():
             # Obtener nuevo ingreso del cohorte
             poblacion_inicial = obtenerPoblacionNuevoIngresoCarrera(
                 data['tipos'], 
