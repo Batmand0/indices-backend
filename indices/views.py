@@ -160,6 +160,7 @@ class IndicesBase(APIView, ABC):
 
     def get_params(self, request):
         """Obtiene y valida parámetros comunes"""
+        
         return {
             'nuevo_ingreso': request.GET.get('nuevo-ingreso'),
             'traslado_equivalencia': request.GET.get('traslado-equivalencia'),
@@ -167,7 +168,8 @@ class IndicesBase(APIView, ABC):
             'semestres': request.GET.get('semestres', '9'),
             'carrera': request.GET.get('carrera')
         }
-
+    
+    
     def get_base_data(self, tipos, cohorte, periodos, carrera):
         """Obtiene datos base comunes"""
         temp_data = {}
@@ -368,6 +370,7 @@ class IndicesPermanencia(IndicesBase):
         try:
             # Obtener parámetros usando método de clase base
             params = self.get_params(request)
+            logger.info(f"Parámetros recibidos: {params}")
             tipos = calcularTipos(params['nuevo_ingreso'], params['traslado_equivalencia'])
             periodos = calcularPeriodos(params['cohorte'], int(params['semestres']) + 1)
             

@@ -2,13 +2,18 @@ from django.db.models import Count, F, Q
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import permissions
+from guardian.shortcuts import get_objects_for_user
 
 from registros.models import Ingreso
 from registros.periodos import calcularPeriodos, getPeriodoActual
 from carreras.models import Carrera  # Agregar esta importación al inicio
+from carreras.views import CarreraListForUser # Importar CarreraListForUser para obtener las carreras permitidas al usuario
 
 import logging
 logger = logging.getLogger(__name__)
+
+def get_carreras_permitidas(user):
+    return get_objects_for_user(user, 'ver_carrera', klass=Carrera)
 
 class TablasPoblacion(APIView):
     """
@@ -80,8 +85,9 @@ class TablasPoblacion(APIView):
             for periodo in periodos:
                 logger.info(f"Procesando período: {periodo}")
                 
-                # Obtener todas las carreras primero
-                todas_carreras = Carrera.objects.values('pk', 'nombre')
+                # Obtener solo las carreras permitidas para el usuario
+                carreras_permitidas = get_carreras_permitidas(request.user)
+                todas_carreras = Carrera.objects.filter(pk__in=[c.pk for c in carreras_permitidas]).values('pk', 'nombre')
                 carreras_dict = {carrera['pk']: {
                     'clave': carrera['pk'],
                     'nombre': carrera['nombre'],
