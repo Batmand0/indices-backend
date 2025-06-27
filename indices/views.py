@@ -394,6 +394,8 @@ class IndicesPermanencia(IndicesBase):
         response_data = {}
         temp_data = base_data['temp_data']
         poblacion_nuevo_ingreso = base_data['poblacion_nuevo_ingreso']
+        egresados_acumuladosHombres = 0
+        egresados_acumuladosMujeres = 0
         egresados_acumulados = 0
 
         for i in range(len(periodos) - 1):
@@ -404,24 +406,33 @@ class IndicesPermanencia(IndicesBase):
                 response_data[periodo_actual] = temp_data[periodo_actual].copy()
                 
                 # Obtener activos del periodo actual
-                activos = temp_data[periodo_actual]['hombres'] + temp_data[periodo_actual]['mujeres']
+                activosHombres = temp_data[periodo_actual]['hombres']
+                activosMujeres = temp_data[periodo_actual]['mujeres']
+                activosGeneral = activosHombres + activosMujeres
                 
                 # Obtener desertores del periodo siguiente
-                desertores = (temp_data[periodo_siguiente]['hombres_desertores'] + 
-                             temp_data[periodo_siguiente]['mujeres_desertoras'])
+                desertoresHombres = temp_data[periodo_siguiente]['hombres_desertores']
+                desertoresMujeres = temp_data[periodo_siguiente]['mujeres_desertoras']
+                desertoresGeneral = desertoresHombres + desertoresMujeres
                 
                 # Sobrescribir datos de deserción
                 response_data[periodo_actual]['hombres_desertores'] = temp_data[periodo_siguiente]['hombres_desertores']
                 response_data[periodo_actual]['mujeres_desertoras'] = temp_data[periodo_siguiente]['mujeres_desertoras']
                 
                 # Calcular tasa con egresados acumulados hasta el periodo anterior
-                tasa = self.calculate_rate(activos, egresados_acumulados, desertores, poblacion_nuevo_ingreso)
-                response_data[periodo_actual]['tasa_permanencia'] = tasa
+                tasaHombres = self.calculate_rate(activosHombres, egresados_acumuladosHombres, desertoresHombres, poblacion_nuevo_ingreso)
+                tasaMujeres = self.calculate_rate(activosMujeres, egresados_acumuladosMujeres, desertoresMujeres, poblacion_nuevo_ingreso)
+                tasaGeneral = self.calculate_rate(activosGeneral, egresados_acumulados, desertoresGeneral, poblacion_nuevo_ingreso)
+                response_data[periodo_actual]['tasa_permanencia_Hombres'] = tasaHombres
+                response_data[periodo_actual]['tasa_permanencia_Mujeres'] = tasaMujeres
+                response_data[periodo_actual]['tasa_permanencia'] = tasaGeneral
 
                 # Actualizar egresados acumulados después de calcular la tasa
-                egresados_acumulados += (temp_data[periodo_actual]['hombres_egresados'] + 
-                                       temp_data[periodo_actual]['mujeres_egresadas'])
+                egresados_acumuladosHombres += (temp_data[periodo_actual]['hombres_egresados'])
+                egresados_acumuladosMujeres += (temp_data[periodo_actual]['mujeres_egresadas'])
+                egresados_acumulados = egresados_acumuladosHombres + egresados_acumuladosMujeres
 
+        logger.info(f"response_data: {response_data}")
         return response_data
 
     def calculate_rate(self, activos, egresados, desertores, poblacion_nuevo_ingreso):
@@ -460,18 +471,39 @@ class IndicesEgreso(IndicesBase):
     def process_response(self, base_data, periodos):
         temp_data = base_data['temp_data']
         poblacion_nuevo_ingreso = base_data['poblacion_nuevo_ingreso']
-        tasa_egreso = 0
         response_data = {}
+
+        # Obtener población de nuevo ingreso por sexo
+        hombres_nuevo_ingreso = 0
+        mujeres_nuevo_ingreso = 0
+        if periodos:
+            primer_periodo = periodos[0]
+            if primer_periodo in temp_data:
+                hombres_nuevo_ingreso = temp_data[primer_periodo]['hombres']
+                mujeres_nuevo_ingreso = temp_data[primer_periodo]['mujeres']
+
+        tasa_egreso = 0
+        tasa_egreso_hombres = 0
+        tasa_egreso_mujeres = 0
 
         for periodo in periodos:
             poblacion_inactiva = obtenerPoblacionInactiva(base_data['alumnos'], periodo)
-            tasa_egreso += self.calculate_rate(poblacion_inactiva['egreso']['egresados'], poblacion_nuevo_ingreso)
+            egresados_total = poblacion_inactiva['egreso']['egresados']
+            egresados_hombres = poblacion_inactiva['egreso']['hombres']
+            egresados_mujeres = poblacion_inactiva['egreso']['mujeres']
+
+            tasa_egreso += self.calculate_rate(egresados_total, poblacion_nuevo_ingreso)
+            tasa_egreso_hombres += self.calculate_rate(egresados_hombres, poblacion_nuevo_ingreso)
+            tasa_egreso_mujeres += self.calculate_rate(egresados_mujeres, poblacion_nuevo_ingreso)
+
             response_data[periodo] = dict(
                 hombres=temp_data[periodo]['hombres'], 
                 mujeres=temp_data[periodo]['mujeres'], 
                 hombres_egresados=temp_data[periodo]['hombres_egresados'], 
                 mujeres_egresadas=temp_data[periodo]['mujeres_egresadas'], 
-                tasa_egreso=tasa_egreso
+                tasa_egreso=tasa_egreso,
+                tasa_egreso_hombres=tasa_egreso_hombres,
+                tasa_egreso_mujeres=tasa_egreso_mujeres
             )
 
         return response_data
@@ -482,14 +514,7 @@ class IndicesEgreso(IndicesBase):
 class IndicesTitulacion(IndicesBase):
     """
     Vista para listar la cantidad de alumnos por carrera.
-
     * Requiere autenticación por token.
-
-    ** nuevo-ingreso: Alumnos ingresando en 1er por examen o convalidacion
-    ** traslado-equivalencia: Alumnos ingresando de otro TEC u otra escuela
-    ** cohorte: El periodo donde empezara el calculo
-    ** semestres: Cuantos semestres seran calculados desde el cohorte
-    ** carrera: El programa educativo que se esta midiendo
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -508,20 +533,41 @@ class IndicesTitulacion(IndicesBase):
     def process_response(self, base_data, periodos):
         temp_data = base_data['temp_data']
         poblacion_nuevo_ingreso = base_data['poblacion_nuevo_ingreso']
-        tasa_titulacion = 0
         response_data = {}
+
+        # Obtener población de nuevo ingreso por sexo
+        hombres_nuevo_ingreso = 0
+        mujeres_nuevo_ingreso = 0
+        if periodos:
+            primer_periodo = periodos[0]
+            if primer_periodo in temp_data:
+                hombres_nuevo_ingreso = temp_data[primer_periodo]['hombres']
+                mujeres_nuevo_ingreso = temp_data[primer_periodo]['mujeres']
+
+        tasa_titulacion = 0
+        tasa_titulacion_hombres = 0
+        tasa_titulacion_mujeres = 0
 
         for periodo in periodos:
             poblacion_inactiva = obtenerPoblacionInactiva(base_data['alumnos'], periodo)
-            tasa_titulacion += self.calculate_rate(poblacion_inactiva['titulacion']['titulados'], poblacion_nuevo_ingreso)
+            titulados_total = poblacion_inactiva['titulacion']['titulados']
+            titulados_hombres = poblacion_inactiva['titulacion']['hombres']
+            titulados_mujeres = poblacion_inactiva['titulacion']['mujeres']
+
+            tasa_titulacion += self.calculate_rate(titulados_total, poblacion_nuevo_ingreso)
+            tasa_titulacion_hombres += self.calculate_rate(titulados_hombres, poblacion_nuevo_ingreso)
+            tasa_titulacion_mujeres += self.calculate_rate(titulados_mujeres, poblacion_nuevo_ingreso)
+
             response_data[periodo] = dict(
-                hombres=temp_data[periodo]['hombres'], 
-                mujeres=temp_data[periodo]['mujeres'], 
-                hombres_egresados=temp_data[periodo]['hombres_egresados'], 
-                mujeres_egresadas=temp_data[periodo]['mujeres_egresadas'], 
-                hombres_titulados=temp_data[periodo]['hombres_titulados'], 
-                mujeres_tituladas=temp_data[periodo]['mujeres_tituladas'], 
-                tasa_titulacion=tasa_titulacion
+                hombres=temp_data[periodo]['hombres'],
+                mujeres=temp_data[periodo]['mujeres'],
+                hombres_egresados=temp_data[periodo]['hombres_egresados'],
+                mujeres_egresadas=temp_data[periodo]['mujeres_egresadas'],
+                hombres_titulados=temp_data[periodo]['hombres_titulados'],
+                mujeres_tituladas=temp_data[periodo]['mujeres_tituladas'],
+                tasa_titulacion=tasa_titulacion,
+                tasa_titulacion_hombres=tasa_titulacion_hombres,
+                tasa_titulacion_mujeres=tasa_titulacion_mujeres
             )
 
         return response_data
@@ -559,6 +605,8 @@ class IndicesDesercion(IndicesBase):
         temp_data = base_data['temp_data']
         poblacion_nuevo_ingreso = base_data['poblacion_nuevo_ingreso']
         desercion_acumulada = 0
+        desercion_acumulada_Hombres = 0
+        desercion_acumulada_Mujeres = 0
 
         for i in range(len(periodos) - 1):
             periodo_actual = periodos[i]
@@ -571,6 +619,8 @@ class IndicesDesercion(IndicesBase):
                 # Sobrescribir datos de deserción con los del periodo siguiente
                 response_data[periodo_actual]['hombres_desertores'] = temp_data[periodo_siguiente]['hombres_desertores']
                 response_data[periodo_actual]['mujeres_desertoras'] = temp_data[periodo_siguiente]['mujeres_desertoras']
+                desertores_Hombres = temp_data[periodo_siguiente]['hombres_desertores']
+                desertores_Mujeres = temp_data[periodo_siguiente]['mujeres_desertoras']
                 
                 # Calcular deserción del periodo
                 desertores = (temp_data[periodo_siguiente]['hombres_desertores'] + 
@@ -578,11 +628,18 @@ class IndicesDesercion(IndicesBase):
                 
                 # Actualizar desercion acumulada
                 desercion_acumulada += desertores
+                desercion_acumulada_Hombres += desertores_Hombres
+                desercion_acumulada_Mujeres += desertores_Mujeres
                 
                 # Calcular tasa de deserción
                 tasa = self.calculate_rate(desercion_acumulada, poblacion_nuevo_ingreso)
+                tasa_desercion_Hombres = self.calculate_rate(desercion_acumulada_Hombres, poblacion_nuevo_ingreso)
+                tasa_desercion_Mujeres = self.calculate_rate(desercion_acumulada_Mujeres, poblacion_nuevo_ingreso)
                 response_data[periodo_actual]['tasa_desercion'] = tasa
+                response_data[periodo_actual]['tasa_desercion_Hombres'] = tasa_desercion_Hombres
+                response_data[periodo_actual]['tasa_desercion_Mujeres'] = tasa_desercion_Mujeres
 
+        logger.info(f"response_data: {response_data}")
         return response_data
 
     def calculate_rate(self, desercion_total, poblacion_nuevo_ingreso):
