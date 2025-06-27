@@ -725,6 +725,8 @@ class IndicesGeneracionalDesercion(IndicesGeneracionalBase):
         """Procesa datos de deserción para una generación"""
         alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
         desercion_total = 0
+        desercion_hombres = 0
+        desercion_mujeres = 0
         alumnos_periodo_anterior = alumnos
         periodo_anterior = generacion
         ultimo_periodo = periodos[-1]
@@ -762,6 +764,8 @@ class IndicesGeneracionalDesercion(IndicesGeneracionalBase):
                 egresados_periodo
             )
             
+            desercion_hombres += desercion['hombres']
+            desercion_mujeres += desercion['mujeres']
             desercion_total += desercion['hombres'] + desercion['mujeres']
             alumnos_periodo_anterior = alumnos_periodo
             periodo_anterior = periodo
@@ -769,12 +773,16 @@ class IndicesGeneracionalDesercion(IndicesGeneracionalBase):
         poblacion_actual = obtenerPoblacionActiva(['RE'], alumnos, ultimo_periodo, carrera)
         total_actual = poblacion_actual['poblacion']
         tasa_desercion = calcularTasa(desercion_total, total_inicial)
-
+        tasa_desercion_hombres = calcularTasa(desercion_hombres, total_inicial)
+        tasa_desercion_mujeres = calcularTasa(desercion_mujeres, total_inicial)
+        
         return {
             'total_inicial': total_inicial,
             'total_actual': total_actual,
             'desercion_total': desercion_total,
             'tasa_desercion': tasa_desercion,
+            'tasa_desercion_hombres': tasa_desercion_hombres,
+            'tasa_desercion_mujeres': tasa_desercion_mujeres,
             'ultimo_periodo': ultimo_periodo
         }
 
