@@ -145,12 +145,16 @@ def obtenerEgresadosAcumulados(alumnos, periodos, periodo_actual=None):
     else:
         periodos_validos = periodos
 
-    return Egreso.objects.filter(
+    acumulados = Egreso.objects.filter(
         alumno_id__in=alumnos.values('clave'),
         periodo__in=periodos_validos
     ).aggregate(
-        total=Count('pk')
-    )['total']
+        total=Count('pk'),
+        hombres=Count('pk', filter=Q(alumno__curp__genero='H')),
+        mujeres=Count('pk', filter=Q(alumno__curp__genero='M'))
+    )
+
+    return acumulados
 
 from abc import ABC, abstractmethod
 
@@ -796,6 +800,9 @@ class IndicesGeneracionalPermanencia(IndicesGeneracionalBase):
 
         # Obtener egresados acumulados hasta el periodo anterior al último
         egresados_acumulados = obtenerEgresadosAcumulados(alumnos, periodos, ultimo_periodo)
+        egresados_acumulados_total = egresados_acumulados['total']
+        egresados_acumulados_hombres = egresados_acumulados['hombres']
+        egresados_acumulados_mujeres = egresados_acumulados['mujeres']
         
         logger.info(f"""
             Egresados acumulados hasta {ultimo_periodo}:
@@ -806,23 +813,33 @@ class IndicesGeneracionalPermanencia(IndicesGeneracionalBase):
         # Obtener población actual
         poblacion_actual = obtenerPoblacionActiva(['RE'], alumnos, ultimo_periodo, carrera)
         total_actual = poblacion_actual['poblacion']
+        total_actual_hombres = poblacion_actual['hombres']
+        total_actual_mujeres = poblacion_actual['mujeres']
 
         # Calcular total actual incluyendo egresados
-        total_actual_con_egresados = total_actual + egresados_acumulados
+        total_actual_con_egresados = total_actual + egresados_acumulados_total
+        total_actual_con_egresados_hombres = total_actual_hombres + egresados_acumulados_hombres
+        total_actual_con_egresados_mujeres = total_actual_mujeres + egresados_acumulados_mujeres
         logger.info(f"""
             Cálculo final:
             Total actual ({total_actual}) + Egresados acumulados ({egresados_acumulados}) = {total_actual_con_egresados}
+            Total actual hombres ({total_actual_hombres}) + Egresados acumulados hombres ({egresados_acumulados_hombres}) = {total_actual_con_egresados_hombres}
+            Total actual mujeres ({total_actual_mujeres}) + Egresados acumulados mujeres ({egresados_acumulados_mujeres}) = {total_actual_con_egresados_mujeres}
             ------------------------
         """)
 
         # Calcular tasa de permanencia
         tasa_permanencia = calcularTasa(total_actual_con_egresados, total_inicial)
+        tasa_permanencia_hombres = calcularTasa(total_actual_con_egresados_hombres, total_inicial)
+        tasa_permanencia_mujeres = calcularTasa(total_actual_con_egresados_mujeres, total_inicial)
 
         # Retornar solo los datos necesarios
         return {
             'total_inicial': total_inicial,
             'total_actual': total_actual_con_egresados,
-            'tasa_permanencia': tasa_permanencia
+            'tasa_permanencia': tasa_permanencia,
+            'tasa_permanencia_hombres': tasa_permanencia_hombres,
+            'tasa_permanencia_mujeres': tasa_permanencia_mujeres,
         }
 
 class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
@@ -830,7 +847,8 @@ class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
         """Procesa datos de egreso para una generación"""
         alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
         total_egresados = 0
-
+        total_egresados_hombres = 0
+        total_egresados_mujeres = 0
         # Procesar cada periodo igual que IndicesEgreso
         for periodo in periodos[:-1]:
             # Obtener población inactiva del periodo
@@ -838,16 +856,24 @@ class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
             
             # Sumar egresados del periodo
             egresados_periodo = poblacion_inactiva['egreso']['egresados']
+            egresados_hombres_periodo = poblacion_inactiva['egreso']['hombres']
+            egresados_mujeres_periodo = poblacion_inactiva['egreso']['mujeres']
             total_egresados += egresados_periodo
+            total_egresados_hombres += egresados_hombres_periodo
+            total_egresados_mujeres += egresados_mujeres_periodo
 
         # Calcular tasa final
         tasa_egreso = calcularTasa(total_egresados, total_inicial)
+        tasa_egreso_hombres = calcularTasa(total_egresados_hombres, total_inicial)
+        tasa_egreso_mujeres = calcularTasa(total_egresados_mujeres, total_inicial)
 
         logger.info(f"""
             Cálculo de egreso generacional:
             Generación: {generacion}
             Total inicial: {total_inicial}
             Total egresados acumulados: {total_egresados}
+            Tasa de egresados hombres: {tasa_egreso_hombres}
+            Tasa de egresados mujeres: {tasa_egreso_mujeres}
             Tasa de egreso: {tasa_egreso}
             ------------------------
         """)
@@ -855,13 +881,17 @@ class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
         return {
             'total_inicial': total_inicial,
             'total_actual': total_egresados,
-            'tasa_egreso': tasa_egreso
+            'tasa_egreso': tasa_egreso,
+            'tasa_egreso_hombres': tasa_egreso_hombres,
+            'tasa_egreso_mujeres': tasa_egreso_mujeres
         }
 class IndicesGeneracionalTitulacion(IndicesGeneracionalBase):
     def process_generation(self, tipos, generacion, carrera, periodos):
         """Procesa datos de egreso para una generación"""
         alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
         total_titulados = 0
+        total_titulados_hombres = 0
+        total_titulados_mujeres = 0
 
         # Procesar cada periodo igual que IndicesEgreso
         for periodo in periodos:
@@ -870,16 +900,24 @@ class IndicesGeneracionalTitulacion(IndicesGeneracionalBase):
             
             # Sumar egresados del periodo
             titulados_periodo = poblacion_inactiva['titulacion']['titulados']
+            titulados_hombres_periodo = poblacion_inactiva['titulacion']['hombres']
+            titulados_mujeres_periodo = poblacion_inactiva['titulacion']['mujeres']
             total_titulados += titulados_periodo
+            total_titulados_hombres += titulados_hombres_periodo
+            total_titulados_mujeres += titulados_mujeres_periodo
 
         # Calcular tasa final
         tasa_titulacion = calcularTasa(total_titulados, total_inicial)
+        tasa_titulacion_hombres = calcularTasa(total_titulados_hombres, total_inicial)
+        tasa_titulacion_mujeres = calcularTasa(total_titulados_mujeres, total_inicial)
 
         logger.info(f"""
             Cálculo de titulacion generacional:
             Generación: {generacion}
             Total inicial: {total_inicial}
             Total titulados acumulados: {total_titulados}
+            Tasa de titulados hombres: {tasa_titulacion_hombres}
+            Tasa de titulados mujeres: {tasa_titulacion_mujeres}
             Tasa de titulacion: {tasa_titulacion}
             ------------------------
         """)
@@ -887,6 +925,8 @@ class IndicesGeneracionalTitulacion(IndicesGeneracionalBase):
         return {
             'total_inicial': total_inicial,
             'total_actual': total_titulados,
+            'tasa_titulacion_mujeres': tasa_titulacion_mujeres,
+            'tasa_titulacion_hombres': tasa_titulacion_hombres,
             'tasa_titulacion': tasa_titulacion
         }
 
