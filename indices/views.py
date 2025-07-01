@@ -684,7 +684,10 @@ class IndicesGeneracionalBase(APIView):
 
 
         poblacion_inicial = obtenerPoblacionActiva(tipos, alumnos, generacion, carrera)
-        return alumnos, poblacion_inicial['poblacion']
+        poblacion_inicial_hombres = poblacion_inicial['hombres']
+        poblacion_inicial_mujeres = poblacion_inicial['mujeres']
+        logger.info(f"Población inicial: {poblacion_inicial}, Hombres: {poblacion_inicial_hombres}, Mujeres: {poblacion_inicial_mujeres}")
+        return alumnos, poblacion_inicial['poblacion'], poblacion_inicial_hombres, poblacion_inicial_mujeres
 
     def get(self, request, format=None):
         """Método GET común"""
@@ -727,7 +730,7 @@ class IndicesGeneracionalDesercion(IndicesGeneracionalBase):
     """
     def process_generation(self, tipos, generacion, carrera, periodos):
         """Procesa datos de deserción para una generación"""
-        alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
+        alumnos, total_inicial, total_inicial_hombres, total_inicial_mujeres = self.get_base_data(tipos, generacion, carrera, periodos)
         desercion_total = 0
         desercion_hombres = 0
         desercion_mujeres = 0
@@ -782,7 +785,11 @@ class IndicesGeneracionalDesercion(IndicesGeneracionalBase):
         
         return {
             'total_inicial': total_inicial,
+            'total_inicial_hombres': total_inicial_hombres,
+            'total_inicial_mujeres': total_inicial_mujeres,
             'total_actual': total_actual,
+            'total_actual_hombres': poblacion_actual['hombres'],
+            'total_actual_mujeres': poblacion_actual['mujeres'],
             'desercion_total': desercion_total,
             'tasa_desercion': tasa_desercion,
             'tasa_desercion_hombres': tasa_desercion_hombres,
@@ -795,7 +802,7 @@ class IndicesGeneracionalPermanencia(IndicesGeneracionalBase):
     def process_generation(self, tipos, generacion, carrera, periodos):
         """Procesa datos de permanencia para una generación"""
         # Obtener datos base
-        alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
+        alumnos, total_inicial, total_inicial_hombres, total_inicial_mujeres = self.get_base_data(tipos, generacion, carrera, periodos)
         ultimo_periodo = periodos[-1]
 
         # Obtener egresados acumulados hasta el periodo anterior al último
@@ -836,6 +843,10 @@ class IndicesGeneracionalPermanencia(IndicesGeneracionalBase):
         # Retornar solo los datos necesarios
         return {
             'total_inicial': total_inicial,
+            'total_inicial_hombres': total_inicial_hombres,
+            'total_inicial_mujeres': total_inicial_mujeres,
+            'total_actual_hombres': total_actual_con_egresados_hombres,
+            'total_actual_mujeres': total_actual_con_egresados_mujeres,
             'total_actual': total_actual_con_egresados,
             'tasa_permanencia': tasa_permanencia,
             'tasa_permanencia_hombres': tasa_permanencia_hombres,
@@ -845,7 +856,7 @@ class IndicesGeneracionalPermanencia(IndicesGeneracionalBase):
 class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
     def process_generation(self, tipos, generacion, carrera, periodos):
         """Procesa datos de egreso para una generación"""
-        alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
+        alumnos, total_inicial, total_inicial_hombres, total_inicial_mujeres = self.get_base_data(tipos, generacion, carrera, periodos)
         total_egresados = 0
         total_egresados_hombres = 0
         total_egresados_mujeres = 0
@@ -880,7 +891,11 @@ class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
 
         return {
             'total_inicial': total_inicial,
+            'total_inicial_hombres': total_inicial_hombres,
+            'total_inicial_mujeres': total_inicial_mujeres,
             'total_actual': total_egresados,
+            'total_actual_hombres': total_egresados_hombres,
+            'total_actual_mujeres': total_egresados_mujeres,
             'tasa_egreso': tasa_egreso,
             'tasa_egreso_hombres': tasa_egreso_hombres,
             'tasa_egreso_mujeres': tasa_egreso_mujeres
@@ -888,7 +903,7 @@ class IndicesGeneracionalEgreso(IndicesGeneracionalBase):
 class IndicesGeneracionalTitulacion(IndicesGeneracionalBase):
     def process_generation(self, tipos, generacion, carrera, periodos):
         """Procesa datos de egreso para una generación"""
-        alumnos, total_inicial = self.get_base_data(tipos, generacion, carrera, periodos)
+        alumnos, total_inicial, total_inicial_hombres, total_inicial_mujeres = self.get_base_data(tipos, generacion, carrera, periodos)
         total_titulados = 0
         total_titulados_hombres = 0
         total_titulados_mujeres = 0
@@ -924,7 +939,11 @@ class IndicesGeneracionalTitulacion(IndicesGeneracionalBase):
 
         return {
             'total_inicial': total_inicial,
+            'total_inicial_hombres': total_inicial_hombres,
+            'total_inicial_mujeres': total_inicial_mujeres,
             'total_actual': total_titulados,
+            'total_actual_hombres': total_titulados_hombres,
+            'total_actual_mujeres': total_titulados_mujeres,
             'tasa_titulacion_mujeres': tasa_titulacion_mujeres,
             'tasa_titulacion_hombres': tasa_titulacion_hombres,
             'tasa_titulacion': tasa_titulacion
