@@ -207,7 +207,11 @@ class ReportesEgreso(ReportesBase):
             # Calcular tasa con el acumulado total (7-12)
             registros__semestres['total_1'] = {'valor': egreso_acumulado['total']}
             tasa_egreso = calcularTasa(egreso_acumulado['total'], poblacion_inicial['poblacion'])
+            tasa_egreso_hombres = calcularTasa(egreso_acumulado['hombres'], poblacion_inicial['poblacion'])
+            tasa_egreso_mujeres = calcularTasa(egreso_acumulado['mujeres'], poblacion_inicial['poblacion'])
             registros__semestres['tasa_egreso_1'] = {'valor': f"{tasa_egreso} %"}
+            registros__semestres['tasa_egreso_hombres'] = {'valor': f"{tasa_egreso_hombres} %"}
+            registros__semestres['tasa_egreso_mujeres'] = {'valor': f"{tasa_egreso_mujeres} %"}
             
             # Agregar logging para verificar
             logger.info(f"""
@@ -241,7 +245,17 @@ class ReportesEgreso(ReportesBase):
                     egreso_acumulado['total'] + egreso_total_2['total'], 
                     poblacion_inicial['poblacion']
                 )
+                tasa_egreso_2_hombres = calcularTasa(
+                    egreso_acumulado['hombres'] + egreso_total_2['hombres'], 
+                    poblacion_inicial['poblacion']
+                )
+                tasa_egreso_2_mujeres = calcularTasa(
+                    egreso_acumulado['mujeres'] + egreso_total_2['mujeres'], 
+                    poblacion_inicial['poblacion']
+                )
                 registros__semestres['tasa_egreso_2'] = {'valor': f"{tasa_egreso_2} %"}
+                registros__semestres['tasa_egreso_2_hombres'] = {'valor': f"{tasa_egreso_2_hombres} %"}
+                registros__semestres['tasa_egreso_2_mujeres'] = {'valor': f"{tasa_egreso_2_mujeres} %"}
 
             response_data[carrera['nombre']] = {
                 'carrera': carrera['nombre'],
@@ -286,7 +300,11 @@ class ReportesTitulacion(ReportesBase):
 
             registros__semestres['total_1'] = {'valor': titulados_total['total']}
             tasa_titulados = calcularTasa(titulados_total['total'], poblacion_inicial['poblacion'])
+            tasa_titulados_hombres = calcularTasa(titulados_total['hombres'], poblacion_inicial['poblacion'])
+            tasa_titulados_mujeres = calcularTasa(titulados_total['mujeres'], poblacion_inicial['poblacion'])
             registros__semestres['tasa_titulacion_1'] = {'valor': f"{tasa_titulados} %"}
+            registros__semestres['tasa_titulacion_hombres'] = {'valor': f"{tasa_titulados_hombres} %"}
+            registros__semestres['tasa_titulacion_mujeres'] = {'valor': f"{tasa_titulados_mujeres} %"}
 
             # Obtener egresados acumulados hasta el semestre actual
             egresados_total = crearTotales()
@@ -322,6 +340,8 @@ class ReportesTitulacion(ReportesBase):
                 
                 # Calcular tasa con el acumulado total desde semestre 8
                 tasa_titulados_2 = calcularTasa(titulados_total_2['total'], poblacion_inicial['poblacion'])
+                tasa_titulados_hombres_2 = calcularTasa(titulados_total_2['hombres'], poblacion_inicial['poblacion'])
+                tasa_titulados_mujeres_2 = calcularTasa(titulados_total_2['mujeres'], poblacion_inicial['poblacion'])
                 registros__semestres['tasa_titulacion_2'] = {'valor': f"{tasa_titulados_2} %"}
 
                 # Calcular índice de titulación para todos los semestres
@@ -330,6 +350,9 @@ class ReportesTitulacion(ReportesBase):
                     egresados_total['total'] if egresados_total['total'] > 0 else 1
                 )
                 registros__semestres['indice_titulacion_2'] = {'valor': f"{indice_titulacion_2} %"}
+                registros__semestres['tasa_titulados_hombres_2'] = {'valor': f"{tasa_titulados_hombres_2} %"}
+                registros__semestres['tasa_titulados_mujeres_2'] = {'valor': f"{tasa_titulados_mujeres_2} %"}
+                registros__semestres['total_2'] = {'valor': titulados_total_2['total']}
 
                 logger.info(f"""
                     Cálculos para semestre {data['semestres']} de carrera {carrera['nombre']}:
